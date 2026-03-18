@@ -105,7 +105,9 @@ The attack is "harvest now, decrypt later." Capture encrypted data today. Wait f
 
 Engram uses [ML-KEM-768](https://csrc.nist.gov/pubs/fips/203/final) (NIST FIPS 203, August 2024) in hybrid mode with X25519. Both classical and post-quantum simultaneously. Same algorithm [OpenSSH 10.0 made the default](https://www.openssh.org/pq.html) in April 2025.
 
-Every artifact gets its own unique 256-bit encryption key. Each tier has independent keypairs. Private keys never exist as files on disk. They live in macOS Keychain (Touch ID on Apple Silicon binds them to the Secure Enclave), HashiCorp Vault, or cloud KMS. The `file:` key source is deliberately blocked in the code.
+Engram offers two encryption architectures. Simple mode uses one key for everything. Envelope mode gives each tier its own keypair and each artifact its own unique 256-bit DEK. Compromise one artifact in envelope mode and only that artifact is exposed. Compromise the warm tier key and cold/frozen are still protected. Key rotation re-wraps DEK headers in O(metadata), not O(data) — you don't re-encrypt terabytes.
+
+Private keys never exist as files on disk. They live in macOS Keychain (Touch ID on Apple Silicon binds them to the Secure Enclave), HashiCorp Vault, or cloud KMS. The `file:` key source is deliberately blocked in the code.
 
 Why start with legacy crypto and migrate before 2030 when you can start with PQ now?
 
@@ -147,13 +149,14 @@ I looked at every memory plugin I could find. Here's where they fall short:
 | | Other plugins | Engram |
 |---|---|---|
 | **Compression** | None, or single-level zstd (~3x) | Multi-stage pipeline: 4-5x / 8-12x / 20-50x per tier |
-| **Encryption** | None | Post-quantum (ML-KEM-768) with per-artifact keys |
+| **Encryption** | None | PQ (ML-KEM-768) — simple or envelope mode (per-artifact DEKs) |
 | **Search** | Decompress everything to find something | Semantic index searches all tiers without decompression |
-| **AI lock-in** | One platform | Claude, Codex, ChatGPT, Cursor, Copilot, custom |
+| **AI lock-in** | One platform | Claude, Codex, ChatGPT, Cursor, Copilot, OpenClaw, custom |
 | **Data sent to cloud** | Sometimes | Never. Zero telemetry. |
 | **Storage format** | Raw JSON files forever | Parquet columnar for frozen tier (20-50x) |
-| **Key management** | Key file on disk (if any) | Keychain/Touch ID, Vault, KMS. File keys blocked. |
-| **Security review** | Self-reviewed | 4 rounds, 3 independent red-team personas |
+| **Key management** | Key file on disk (if any) | Per-tier keypairs, Keychain/Touch ID, Vault, KMS. File keys blocked. |
+| **Key rotation** | Re-encrypt everything | Re-wrap DEK headers only (O(metadata)) |
+| **Security review** | Self-reviewed | 6 rounds, 3 red-team personas, formal threat model |
 
 ## Try it
 
@@ -181,7 +184,7 @@ engram recall ~/.claude/subagents/session-2025-09-12.jsonl
 
 The guided setup analyzes your file ages and asks whether you want 2 tiers (simple: hot + cold) or 4 tiers (full: hot + warm + cold + frozen). It shows you exactly how many files would go where before anything runs. You choose.
 
-Open source. MIT license. 72 tests. Red-team reviewed by 3 independent security personas. 4 rounds of security review.
+Open source. MIT license. 72 tests. Red-team reviewed by 3 independent security personas across 6 rounds. Formal threat model. Per-artifact envelope encryption. Every module wired in and tested.
 
 [github.com/qinnovates/engram](https://github.com/qinnovates/engram)
 

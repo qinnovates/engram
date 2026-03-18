@@ -259,6 +259,42 @@ This is the same algorithm that [OpenSSH 10.0 made the default](https://www.open
 
 **There is no reason to start with legacy crypto.** The post-quantum standard exists, the tooling is mature, and the performance overhead is negligible. Starting with classical encryption today means you'd need to migrate before 2030 anyway. Start with PQ and you're done.
 
+### Two encryption architectures
+
+| | Simple Mode | Envelope Mode |
+|---|---|---|
+| **Keys** | One key for all tiers | Per-tier keypairs (warm/cold/frozen) |
+| **Per-artifact isolation** | No — same key encrypts everything | Yes — each artifact gets unique 256-bit DEK |
+| **Compromise blast radius** | One key = all data | One tier key = only that tier. One artifact DEK = only that artifact. |
+| **Key rotation** | Re-encrypt all data (O(data)) | Re-wrap DEK headers only (O(metadata)) |
+| **Setup** | `engram encrypt-setup` | `engram encrypt-setup` then configure per-tier keys |
+| **Best for** | Solo dev, simple threat model | Teams, compliance, high-security |
+
+```json
+// Simple mode (default)
+{
+  "encryption": {
+    "enabled": true,
+    "envelope_mode": false,
+    "recipient_pubkey": "age1..."
+  }
+}
+
+// Envelope mode (most secure)
+{
+  "encryption": {
+    "enabled": true,
+    "envelope_mode": true,
+    "warm_pubkey": "age1...",
+    "cold_pubkey": "age1...",
+    "frozen_pubkey": "age1...",
+    "warm_private_source": "keychain:engram:warm-key",
+    "cold_private_source": "keychain:engram:cold-key",
+    "frozen_private_source": "keychain:engram:frozen-key"
+  }
+}
+```
+
 ### This is the most secure option — if you store your secrets safely and always rotate
 
 Post-quantum encryption protects the algorithm. Key management protects the key. Both must be strong:
@@ -273,14 +309,15 @@ Post-quantum encryption protects the algorithm. Key management protects the key.
 
 | Feature | engram | Typical memory plugin |
 |---------|---------------------|----------------------|
-| Compression | 4-tier automatic (hot/warm/cold/frozen) with production-grade zstd | None or simple gzip |
-| Encryption | Post-quantum (ML-KEM-768) with per-artifact keys and envelope encryption | None, or single-key AES |
+| Compression | Multi-stage pipeline: 4-5x / 8-12x / 20-50x per tier | None or single-level zstd (~3x) |
+| Encryption | PQ (ML-KEM-768) + simple or envelope mode (per-artifact DEKs) | None, or single-key AES |
 | Context enhancement | Semantic index + progressive recall + budget management | Load everything or nothing |
-| Key management | Asymmetric — public encrypts, private decrypts from vault. Touch ID. No file keys. | Symmetric key in a file |
-| AI-agnostic | Claude, ChatGPT, Cursor, Copilot, custom | Locked to one platform |
-| Disk overhead | Index is <1 MB. Artifacts shrink 3-4x. | Grows linearly with usage |
-| Security review | Red-team reviewed by 3 independent security personas | Self-reviewed |
-| Brain-inspired | Mirrors human working/recent/long-term/deep memory with matching retrieval tradeoffs | Flat storage |
+| Key management | Asymmetric, per-tier keypairs, Touch ID / Vault / KMS. File keys blocked. | Key file on disk |
+| AI-agnostic | Claude, Codex, ChatGPT, Cursor, Copilot, OpenClaw, custom | Locked to one platform |
+| Data leaves machine | Never. Zero telemetry. | Sometimes |
+| Disk overhead | Index <1 MB. Real results: 2.6 GB → 1.6 GB saved (11.62x) | Grows linearly |
+| Security review | 6 rounds, 3 red-team personas, formal threat model | Self-reviewed |
+| Brain-inspired | 4-tier (working/recent/long-term/deep memory) with matching retrieval tradeoffs | Flat storage |
 
 ---
 
@@ -491,7 +528,7 @@ engram/
 │   ├── metadata.py              # Artifact tracking + integrity
 │   ├── scanner.py               # AI assistant auto-detection
 │   └── cli.py                   # CLI interface
-├── tests/                       # 47 passing, 6 integration (need age)
+├── tests/                       # 72 passing
 ├── docs/
 │   └── KEY-STORAGE-GUIDE.md     # Vault options ranked by security
 ├── README.md
