@@ -85,20 +85,32 @@ def _verify_model_checksum(model) -> bool:
         return True  # Don't block on unexpected model internals
 
 
-def _get_model(model_name: str = DEFAULT_MODEL):
-    """Load or return cached SentenceTransformer model."""
+def _get_model(model_name: str = DEFAULT_MODEL, allow_network: bool = False):
+    """Load or return cached SentenceTransformer model.
+
+    Args:
+        model_name: HuggingFace model identifier.
+        allow_network: If True, allows network calls for model download/update.
+            Only set to True during `engram init` or `engram update-model`.
+            All normal operations (run, search, recall, context) pass False.
+    """
     if not _check_sentence_transformers():
         return None
     if model_name not in _model_cache:
         from sentence_transformers import SentenceTransformer
-        # Force fully offline mode — honor "zero network calls" promise
-        # HF_HUB_OFFLINE=1 prevents version-check HEAD requests to huggingface.co
-        # TRANSFORMERS_OFFLINE=1 prevents transformers library network calls
-        # HF_HUB_DISABLE_TELEMETRY=1 prevents usage telemetry
-        # Model must already be cached from initial `engram init` download
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
-        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-        os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+        if allow_network:
+            # During init/update: allow network for model download + update check
+            # Still disable telemetry — we allow the download, not the tracking
+            os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+            os.environ.pop("HF_HUB_OFFLINE", None)
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            logger.info("Network mode: allowing model download/update check")
+        else:
+            # Normal operation: fully offline — zero network calls
+            # Model must already be cached from `engram init`
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
         model = SentenceTransformer(model_name)
         # Verify model integrity against known checksum
         if model_name == DEFAULT_MODEL and not _verify_model_checksum(model):
@@ -131,6 +143,21 @@ class SearchResult:
     path: str
     score: float
     tier: str
+
+
+def download_model(model_name: str = DEFAULT_MODEL) -> bool:
+    """Download or update the embedding model (network allowed).
+
+    Call this from `engram init` or `engram update-model`.
+    Normal operations use _get_model() which is fully offline.
+
+    Returns True if model is ready, False if sentence-transformers not installed.
+    """
+    model = _get_model(model_name, allow_network=True)
+    if model is None:
+        return False
+    logger.info("Embedding model ready: %s", model_name)
+    return True
 
 
 def _encode_text(text: str, model_name: str = DEFAULT_MODEL) -> Optional[np.ndarray]:

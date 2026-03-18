@@ -21,7 +21,7 @@ from pathlib import Path
 
 from .config import EngineConfig
 from .engine import TieringEngine
-from .encryption import check_age_installed, AgeNotFoundError
+from .encryption import EncryptionError
 from .setup import run_guided_setup, run_interactive_setup
 
 
@@ -49,6 +49,31 @@ def cmd_init(args: argparse.Namespace) -> None:
         print(f"Scan targets: {len(config.scan_targets)}")
     else:
         run_guided_setup(config_path)
+
+    # Download/update embedding model (only time network is allowed)
+    try:
+        from .embeddings import download_model
+        print("Downloading/verifying embedding model (one-time network call)...")
+        if download_model():
+            print("Embedding model ready (future operations will be fully offline)")
+        else:
+            print("Embedding model not available (sentence-transformers not installed)")
+            print("Keyword search will work. Install for semantic search: pip install sentence-transformers")
+    except Exception as e:
+        print(f"Embedding model setup skipped: {e}")
+
+
+def cmd_update_model(args: argparse.Namespace) -> None:
+    """Download or update the embedding model (network call)."""
+    try:
+        from .embeddings import download_model
+        print("Checking for embedding model updates...")
+        if download_model():
+            print("Embedding model updated and verified.")
+        else:
+            print("sentence-transformers not installed. Install: pip install sentence-transformers")
+    except Exception as e:
+        print(f"Model update failed: {e}")
 
 
 def cmd_scan(args: argparse.Namespace) -> None:
@@ -269,42 +294,53 @@ def cmd_encrypt_setup(_args: argparse.Namespace) -> None:
     print("=" * 60)
     print()
 
-    # Check age
+    # Check sidecar
     try:
-        version = check_age_installed()
-        print(f"[OK] age found: {version}")
-        if "1.3" in version or any(f"1.{x}" in version for x in range(3, 20)):
-            print("[OK] PQ hybrid support (ML-KEM-768) available")
-        else:
-            print("[WARN] age < 1.3.0 — no PQ support. Update: brew upgrade age")
-    except AgeNotFoundError as e:
+        from .vault import VaultClient
+        client = VaultClient()
+        client.close()
+        print("[OK] engram-vault sidecar found")
+        print("[OK] NIST-approved: ML-KEM-768 + X25519 + AES-256-GCM")
+    except EncryptionError as e:
         print(f"[MISSING] {e}")
         return
 
     print()
-    print("Step 1: Generate keypair and store in Keychain (recommended)")
+    print("Step 1: Generate keypair for each tier")
     print("-" * 40)
-    print("  python3 -c \"from src.envelope import EnvelopeEncryptor; \\")
-    print("    pub, src = EnvelopeEncryptor.setup_tier_with_keychain('warm'); \\")
-    print("    print(f'Public key: {pub}'); print(f'Source: {src}')\"")
+    print("  The sidecar generates ML-KEM-768 + X25519 hybrid keypairs")
+    print("  and stores private keys directly in your OS credential vault.")
     print()
-    print("  This generates a keypair and stores the private key directly")
-    print("  in macOS Keychain (Touch ID protected on Apple Silicon).")
-    print("  The private key NEVER exists as a file on disk.")
-    print()
+
+    for tier in ["warm", "cold", "frozen"]:
+        try:
+            client = VaultClient()
+            pubkey = client.keygen(tier)
+            client.close()
+            print(f"  [OK] {tier}: keypair generated, private key in Keychain")
+            print(f"       Public key: {pubkey[:40]}...")
+        except EncryptionError as e:
+            msg = str(e)
+            if "already exists" in msg:
+                print(f"  [OK] {tier}: keypair already exists")
+            else:
+                print(f"  [SKIP] {tier}: {msg}")
+
     print()
     print("Step 2: Update your config")
     print("-" * 40)
     print('  In ~/.engram/config.json, set:')
     print('  "encryption": {')
     print('    "enabled": true,')
-    print('    "envelope_mode": true,')
-    print('    "warm_pubkey": "age1your-public-key-here",')
-    print('    "warm_private_source": "keychain:engram:warm-key"')
+    print('    "envelope_mode": true')
     print('  }')
     print()
-    print("  Private keys are stored in Keychain — never as files on disk.")
-    print("  The file: key source is deliberately blocked.")
+    print("  Private keys are stored in your OS credential vault:")
+    print("    macOS: Keychain (Touch ID protected)")
+    print("    Windows: Credential Manager (DPAPI)")
+    print("    Linux: libsecret / GNOME Keyring")
+    print()
+    print("  Keys NEVER exist as files on disk. Python NEVER sees them.")
     print("  See docs/KEY-STORAGE-GUIDE.md for Vault/KMS alternatives.")
 
 
@@ -363,6 +399,9 @@ def main() -> None:
     # verify
     sub.add_parser("verify", help="Verify SHA-256 integrity of tracked artifacts")
 
+    # update-model
+    sub.add_parser("update-model", help="Download or update embedding model (only command that uses network)")
+
     # encrypt-setup
     sub.add_parser("lock", help="Encrypt index bundle (session end)")
     sub.add_parser("unlock", help="Decrypt index bundle (session start)")
@@ -380,6 +419,7 @@ def main() -> None:
         "search": cmd_search,
         "reindex": cmd_reindex,
         "verify": cmd_verify,
+        "update-model": cmd_update_model,
         "lock": cmd_lock,
         "unlock": cmd_unlock,
         "encrypt-setup": cmd_encrypt_setup,
