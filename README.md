@@ -574,6 +574,36 @@ Engram does NOT protect against:
 - `zstandard` >= 0.19.0 (installed automatically)
 - `age` >= 1.3.0 (optional, for PQ encryption) — `brew install age`
 
+## How a single artifact flows through the pipeline
+
+```
+Session file: session-2025-09-12.jsonl (1.5 MB)
+
+HOT (day 0)          ████████████████████████████████████████  1,500 KB  (1x)
+  ↓ 48h old, 24h idle
+WARM (day 2)         ████████████                              340 KB   (4.4x)
+  minify JSON (-35%)  →  zstd-3
+  ↓ 14d old, 7d idle
+COLD (day 14)        ██████                                    150 KB   (10x)
+  strip boilerplate (-60%)  →  minify  →  dict-trained zstd-9
+  ↓ 90d old, 30d idle
+FROZEN (day 90)      ██                                        50 KB    (30x)
+  strip  →  minify  →  columnar Parquet + dict + zstd-19
+
+Encrypted at each tier with unique 256-bit DEK (ML-KEM-768)
+```
+
+### Real results on 4,560 artifacts
+
+```
+Before Engram:   2.6 GB across 4,560 files (plaintext, unsearchable)
+After Engram:    1.6 GB saved, 11.62x ratio, 131,961 keywords indexed
+  Hot:           4,237 artifacts (recent, untouched)
+  Warm:          37 artifacts (compressed 4-11x)
+  Cold:          286 artifacts (compressed 6-12x)
+  Frozen:        0 (none old enough yet — 90 day threshold)
+```
+
 ## Tests
 
 ```bash
