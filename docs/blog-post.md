@@ -35,14 +35,15 @@ Before Engram, my Claude artifacts looked like this:
 After running `engram run`:
 
 ```
-4,538 files tracked and indexed
-~150 MB on disk (from 2.6 GB)
-122,787 keywords searchable across all tiers
-Every artifact encrypted with its own unique key
-Months of context accessible in the same token budget
+4,537 files tracked and indexed
+609 artifacts compressed across warm and cold tiers
+11.58x compression ratio (real, on my actual session data)
+131,271 keywords searchable across all tiers
+1.6 GB saved
+Encryption: per-artifact keys, private keys in Keychain (Touch ID)
 ```
 
-That's a 94% reduction in disk usage. But the disk savings aren't the point. The point is that my AI assistant can now reference decisions I made three months ago without me re-explaining them. The context window didn't get bigger. The memory got smarter.
+1.6 GB saved from a single command. But the disk savings aren't the point. The point is that my AI assistant can now reference decisions I made three months ago without me re-explaining them. The context window didn't get bigger. The memory got smarter.
 
 ## How it works: your brain already figured this out
 
@@ -108,6 +109,18 @@ Every artifact gets its own unique 256-bit encryption key. Each tier has indepen
 
 Why start with legacy crypto and migrate before 2030 when you can start with PQ now?
 
+## Key management: the part nobody wants to think about
+
+Encryption is optional. Engram works without it — you get compression, indexing, and context enhancement either way. But if your sessions contain anything you wouldn't want an attacker to read, turn it on.
+
+When you do, understand this: **if you lose your private key, encrypted data is gone forever.** No recovery. No backdoor. That's the point of strong encryption, but it means your key management matters more than the algorithm.
+
+On macOS, Touch ID + Keychain is the easiest path. The Secure Enclave on Apple Silicon means the key is hardware-bound — it can't be extracted even with root access. On Windows, native Keychain isn't supported yet. Use a FIDO2 YubiKey for hardware-bound storage, or HashiCorp Vault. On Linux, Vault or cloud KMS via the `command:` source.
+
+For production or team environments, I recommend running Engram's encryption under a dedicated service account with RBAC — a distinct account that handles only encryption/decryption operations, with no other privileges on the system. This separates the encryption boundary from your daily user account. If a compromised session can't access the key material, the encrypted data stays safe. Setting up RBAC is out of scope for this tool, but if you're in that environment, you already know what to do.
+
+Your config file (`~/.engram/config.json`) contains the public key and scan paths. The public key alone can't decrypt anything, but it's still operational metadata. The config is `.gitignore`d, written with `0600` permissions, and should never be shared. Treat it like any other security configuration.
+
 ## Everything stays local. Unless you decide otherwise.
 
 No data is sent to any server. No telemetry. No analytics. Your memories never leave your filesystem.
@@ -166,7 +179,9 @@ engram context --query "auth patterns we discussed"
 engram recall ~/.claude/subagents/session-2025-09-12.jsonl
 ```
 
-Open source. MIT license. 66 tests. Red-team reviewed.
+The guided setup analyzes your file ages and asks whether you want 2 tiers (simple: hot + cold) or 4 tiers (full: hot + warm + cold + frozen). It shows you exactly how many files would go where before anything runs. You choose.
+
+Open source. MIT license. 72 tests. Red-team reviewed by 3 independent security personas. 4 rounds of security review.
 
 [github.com/qinnovates/engram](https://github.com/qinnovates/engram)
 
