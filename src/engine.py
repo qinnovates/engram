@@ -151,6 +151,28 @@ class TieringEngine:
         if self._audit:
             getattr(self._audit, method)(**kwargs)
 
+    def _encrypt_if_enabled(self, compressed_path: Path) -> tuple[Path, bool]:
+        """Encrypt a compressed file if encryption is configured.
+
+        Returns (final_path, was_encrypted). Cleans up on failure.
+        Shared by _tier_to_warm, _tier_to_cold, _tier_to_frozen.
+        """
+        if not (self.config.encryption.enabled
+                and self.config.encryption.recipient_pubkey):
+            return compressed_path, False
+
+        try:
+            encrypted_path = encrypt_file(compressed_path, self.config.encryption)
+            compressed_path.unlink()
+            return encrypted_path, True
+        except (OSError, subprocess.SubprocessError, EncryptionError):
+            enc_candidate = compressed_path.with_suffix(
+                compressed_path.suffix + ".age"
+            )
+            if enc_candidate.exists():
+                enc_candidate.unlink()
+            raise
+
     def scan(self) -> list[Path]:
         """
         Discover all artifacts across configured scan targets.
@@ -267,22 +289,7 @@ class TieringEngine:
         )
 
         compressed_path = result.output_path
-
-        # Optional encryption
-        encrypted = False
-        if self.config.encryption.enabled and self.config.encryption.recipient_pubkey:
-            try:
-                encrypted_path = encrypt_file(compressed_path, self.config.encryption)
-                # Remove unencrypted compressed file
-                compressed_path.unlink()
-                compressed_path = encrypted_path
-                encrypted = True
-            except (OSError, subprocess.SubprocessError, EncryptionError):
-                # Clean up partial encryption output
-                enc_candidate = compressed_path.with_suffix(compressed_path.suffix + ".age")
-                if enc_candidate.exists():
-                    enc_candidate.unlink()
-                raise
+        compressed_path, encrypted = self._encrypt_if_enabled(compressed_path)
 
         action.new_size = compressed_path.stat().st_size
         action.ratio = result.ratio
@@ -340,20 +347,7 @@ class TieringEngine:
             raise
 
         final_path = result.output_path
-
-        # Re-encrypt if encryption is enabled
-        encrypted = False
-        if self.config.encryption.enabled and self.config.encryption.recipient_pubkey:
-            try:
-                encrypted_path = encrypt_file(final_path, self.config.encryption)
-                final_path.unlink()
-                final_path = encrypted_path
-                encrypted = True
-            except (OSError, subprocess.SubprocessError, EncryptionError):
-                enc_candidate = final_path.with_suffix(final_path.suffix + ".age")
-                if enc_candidate.exists():
-                    enc_candidate.unlink()
-                raise
+        final_path, encrypted = self._encrypt_if_enabled(final_path)
 
         action.new_size = final_path.stat().st_size
         action.ratio = result.ratio
@@ -414,20 +408,7 @@ class TieringEngine:
             raise
 
         final_path = result.output_path
-
-        # Re-encrypt if enabled
-        encrypted = False
-        if self.config.encryption.enabled and self.config.encryption.recipient_pubkey:
-            try:
-                encrypted_path = encrypt_file(final_path, self.config.encryption)
-                final_path.unlink()
-                final_path = encrypted_path
-                encrypted = True
-            except (OSError, subprocess.SubprocessError, EncryptionError):
-                enc_candidate = final_path.with_suffix(final_path.suffix + ".age")
-                if enc_candidate.exists():
-                    enc_candidate.unlink()
-                raise
+        final_path, encrypted = self._encrypt_if_enabled(final_path)
 
         action.new_size = final_path.stat().st_size
         action.ratio = result.ratio
