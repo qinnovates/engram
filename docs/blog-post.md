@@ -82,6 +82,10 @@ This matters more as memory systems get more capable. More memory means more dat
 
 I see this with tools like OpenClaw and other open-source memory extensions. They expand context aggressively, which is useful. But they store everything unencrypted. On a shared server, a stolen laptop, or a compromised backup, that's every session you've ever had, readable in seconds.
 
+I built Engram to work with Claude Code primarily (it auto-detects 18 Claude artifact locations), but it works with OpenClaw, Cursor, ChatGPT, Copilot, or anything that writes files to disk. Point it at a directory and it handles compression, indexing, and encryption.
+
+But here's my honest take: if you're using OpenClaw or any open-source AI tool that stores session data, and you don't have a solid understanding of your security model and the OSI layers your data travels through, you should learn that before you start accumulating months of sensitive context in plaintext. Engram gives you the encryption layer. It doesn't give you the judgment to know when you need it. That's on you.
+
 Engram runs entirely on your local machine. No data is sent to any server. No telemetry. Your memories never leave your filesystem unless you choose to move them.
 
 And that's the key difference: you choose the architecture. Keep everything local with Keychain encryption. Offload frozen archives to a NAS or S3. Share a compressed index across team machines. The encryption travels with the data. Even if you move cold-tier archives to cheaper storage elsewhere, an attacker who intercepts them gets PQ-encrypted blobs with per-artifact keys they can't unwrap.

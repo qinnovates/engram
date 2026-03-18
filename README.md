@@ -8,6 +8,18 @@ Engram is different. It's the plumbing layer that lets your agents work with mon
 
 **Everything stays local. Nothing is sent to any server, API, or third party. Zero telemetry. Your memories never leave your machine.** But if you choose to offload memory to a separate server, NAS, or cloud archive, the encryption travels with it. You choose the architecture. The plumbing is here.
 
+## Works with Claude, OpenClaw, and anything that writes files
+
+Engram is AI-agnostic. It compresses and encrypts the artifacts your AI assistant leaves behind, regardless of which assistant made them.
+
+**Claude Code** is the primary target. Engram auto-detects 18 Claude artifact locations: conversation logs, subagent outputs, memory files, debug traces, plans, tasks, session metadata. It ships as a Claude Code plugin (invocable as `/engram`) with hooks that auto-load context at session start.
+
+**OpenClaw** and other open-source AI tools work too. Point Engram at any directory where your tool writes memory files and it handles the rest. Add custom scan targets in `config.json` or use the interactive setup (`engram init --mode interactive`) to pick exactly which locations to archive.
+
+A word on OpenClaw specifically: it's a capable tool that expands context aggressively. But expanding context without understanding your security model is how you end up with months of unencrypted session history on a shared machine. If you're using OpenClaw (or any open-source AI tool that stores conversation logs), you should understand the OSI model well enough to know where your data is exposed, and you should have a security posture before you start accumulating sensitive context. Engram doesn't replace that knowledge. It provides the encryption and compression layer for people who already have it.
+
+If you're running any AI assistant without encryption on the session data, you're trusting that nobody will ever access your disk. That's not a security model. That's hope.
+
 ## Why this exists
 
 Your brain doesn't keep every memory at the same resolution. It tiers them. Recent things are vivid and fast. Older things compress into patterns and summaries. Deep memories take effort and the right cue to retrieve. This isn't a limitation. It's what makes the system scale.
