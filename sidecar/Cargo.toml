@@ -1,0 +1,17 @@
+[package]
+name = "engram-vault"
+version = "1.0.0"
+edition = "2021"
+description = "Secure crypto sidecar for Engram. Handles key retrieval and age encryption/decryption so private keys never enter Python's address space."
+license = "MIT"
+
+[dependencies]
+# Zero-on-drop for key material — deterministic memory zeroing
+zeroize = { version = "1", features = ["zeroize_derive"] }
+# macOS Security.framework bindings
+security-framework = "3"
+
+[profile.release]
+# Strip debug info to reduce binary size
+strip = true
+lto = true
