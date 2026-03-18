@@ -147,21 +147,62 @@ NIST [IR 8547](https://nvlpubs.nist.gov/nistpubs/ir/2024/NIST.IR.8547.ipd.pdf) (
 
 ## Architecture
 
+For the full detailed walkthrough of how every component works — registration, tier transitions, compression pipeline, search retrieval stack, recall flow, encryption lifecycle, and lookup tables — see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+### File tree
+
 ```
 engram/
-├── sidecar/           # Rust crypto sidecar (engram-vault, 364 KB)
-│   └── src/main.rs    # mlock, zeroize, Keychain, age stdin pipe
+├── .claude-plugin/
+│   └── plugin.json                # Anthropic marketplace manifest
+├── .github/workflows/
+│   └── ci.yml                     # GitHub Actions (pytest on push)
+├── sidecar/                       # Rust crypto sidecar (364 KB binary)
+│   ├── Cargo.toml
+│   └── src/
+│       ├── main.rs                # mlock, zeroize, core dump disabled, env cleared
+│       └── keychain.rs            # macOS Security.framework integration
 ├── src/
-│   ├── engine.py      # Orchestrator (scan → index → tier → recall)
-│   ├── pipeline.py    # Multi-stage compression (minify → boilerplate → dict → Parquet)
-│   ├── context.py     # Semantic index + progressive recall + budget
-│   ├── envelope.py    # Asymmetric envelope encryption (per-artifact DEK)
-│   ├── vault.py       # Python client for Rust sidecar
-│   ├── audit.py       # Audit logger with PII detection
-│   └── ...            # config, metadata, scanner, compressor, fileutil, cli, setup
-├── skills/engram/     # Claude Code plugin (SKILL.md)
-├── hooks/             # SessionStart + PreCompact hooks
-└── tests/             # 72 tests
+│   ├── engine.py                  # Orchestrator (scan → index → tier → recall)
+│   ├── pipeline.py                # Multi-stage compression (minify → strip → dict → Parquet)
+│   ├── context.py                 # Semantic index + hybrid search (keyword + vector + RRF)
+│   ├── embeddings.py              # Matryoshka tiered embeddings (384/256/128/64-binary)
+│   ├── vector_index.py            # HNSW nearest-neighbor per tier
+│   ├── hybrid_search.py           # Reciprocal rank fusion + contextual retrieval
+│   ├── lookup_tables.py           # LSH hash tables + Product Quantization codebook
+│   ├── envelope.py                # Asymmetric PQ envelope encryption (per-artifact DEK)
+│   ├── vault.py                   # Python client for Rust sidecar
+│   ├── index_crypto.py            # Index bundle encryption (lock/unlock)
+│   ├── encryption.py              # age CLI integration + validation
+│   ├── compressor.py              # zstd streaming compress/decompress
+│   ├── config.py                  # Config schema + validation + sensitive dir blocklist
+│   ├── metadata.py                # Artifact registry + SHA-256 integrity
+│   ├── scanner.py                 # AI assistant artifact auto-detection (18 locations)
+│   ├── setup.py                   # Guided/interactive/auto setup wizard
+│   ├── audit.py                   # Audit logger with regex PII/secret detection
+│   ├── fileutil.py                # Shared atomic writes, path containment, hashing
+│   └── cli.py                     # CLI: init, scan, run, status, search, context, recall,
+│                                  #       reindex, verify, lock, unlock, encrypt-setup
+├── skills/engram/
+│   └── SKILL.md                   # Claude Code skill (13 use case examples)
+├── hooks/
+│   └── hooks.json                 # SessionStart + PreCompact hooks
+├── docs/
+│   ├── ARCHITECTURE.md            # Detailed technical documentation (442 lines)
+│   ├── KEY-STORAGE-GUIDE.md       # Key management guide
+│   └── blog-post.md               # Launch blog post
+├── tests/                         # 116 tests
+│   ├── test_compressor.py
+│   ├── test_engine.py
+│   ├── test_envelope.py
+│   ├── test_metadata.py
+│   ├── test_pipeline.py
+│   ├── test_embeddings.py
+│   └── test_lookup_tables.py
+├── marketplace.json               # Plugin distribution metadata
+├── pyproject.toml                 # Package config (pip installable)
+├── LICENSE                        # MIT
+└── README.md
 ```
 
 ---
