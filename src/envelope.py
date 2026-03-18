@@ -14,7 +14,7 @@ Architecture:
   │  Per-Artifact DEK    │  │  Per-Artifact DEK          │
   │  (random 256-bit)    │  │  (random 256-bit)          │
   │  Wrapped by warm     │  │  Wrapped by cold           │
-  │  public key via age  │  │  public key via age        │
+  │  tier public key     │  │  tier public key           │
   │  Stored in .envelope │  │  Stored in .envelope       │
   └──────────────────────┘  └───────────────────────────┘
 
@@ -29,7 +29,7 @@ Why asymmetric:
   - Public key on disk = anyone can write encrypted data (safe)
   - Private key OFF disk = compromise the machine, still can't read cold data
   - Per-tier keypairs = warm compromise doesn't expose cold
-  - Forward secrecy: age uses ephemeral X25519 + ML-KEM-768 per encryption
+  - Forward secrecy: sidecar uses ephemeral X25519 + ML-KEM-768 per encryption
   - No symmetric master key to protect — the "master" IS the keypair
 
 Why per-tier keypairs:
@@ -38,7 +38,7 @@ Why per-tier keypairs:
   - Compromise warm (more accessible) doesn't touch cold
 
 Key lifecycle:
-  1. User generates keypairs: age-keygen → warm keypair, age-keygen → cold keypair
+  1. User generates keypairs: KEYGEN warm, KEYGEN cold (via sidecar)
   2. Public keys go in config.json (plaintext, safe)
   3. Private keys go to user's chosen vault (per docs/KEY-STORAGE-GUIDE.md)
   4. Encryption: engine uses public key only (no private key needed)
@@ -53,13 +53,12 @@ import json
 import os
 import secrets
 import subprocess
-import shutil
 import tempfile
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Optional
 
-from .encryption import EncryptionError, check_age_installed, validate_recipient
+from .encryption import EncryptionError
 from .fileutil import is_path_under
 
 
@@ -117,13 +116,13 @@ class EnvelopeHeader:
     """
     Stored alongside each encrypted artifact as .envelope.json.
 
-    Contains the age-encrypted DEK and metadata. The DEK is encrypted
+    Contains the sidecar-encrypted DEK and metadata. The DEK is encrypted
     with the tier's public key — only the corresponding private key
     can recover it.
     """
     version: int = HEADER_VERSION
     tier: str = "warm"
-    # The DEK encrypted by age using the tier's public key (base64 of the age ciphertext)
+    # The DEK encrypted by age using the tier's public key (base64 of the .encf ciphertext)
     encrypted_dek_hex: str = ""
     # SHA-256 of the original plaintext (pre-compression, pre-encryption)
     plaintext_hash: str = ""
@@ -237,134 +236,95 @@ def generate_dek() -> bytes:
 
 def encrypt_dek_with_pubkey(dek: bytes, pubkey: str) -> bytes:
     """
-    Encrypt a DEK using an age public key (asymmetric).
+    Encrypt a DEK using the tier's public key via the sidecar.
 
-    DEK is piped via stdin — it NEVER touches disk as plaintext.
-    age reads from stdin and writes ciphertext to stdout.
-
-    age uses:
-      - X25519 key agreement (classical)
-      - ML-KEM-768 key encapsulation (post-quantum, v1.3.0+)
-      - ChaCha20-Poly1305 for the symmetric payload
-
-    Each call generates a fresh ephemeral keypair internally,
-    providing forward secrecy.
+    DEK is written to a temp file with 0600 permissions, encrypted
+    by the sidecar using ML-KEM-768 + X25519 + AES-256-GCM, then
+    the plaintext temp file is securely deleted.
 
     Args:
         dek: 32-byte data encryption key to protect.
-        pubkey: age public key (age1...) or SSH public key.
+        pubkey: Tier name (warm, cold, frozen) — the sidecar looks up
+                the public key from Keychain.
 
     Returns:
-        age ciphertext bytes containing the encrypted DEK.
+        Encrypted DEK bytes (.encf format).
     """
-    _check_age_cached()
-    validate_recipient(pubkey)
+    import tempfile as _tf
+    from .vault import VaultClient
 
-    # Pipe DEK via stdin — never touches disk (CRITICAL: fixes temp file race)
-    result = subprocess.run(
-        ["age", "-r", pubkey],
-        input=dek, capture_output=True, timeout=30,
-    )
-    if result.returncode != 0:
-        raise EncryptionError("Failed to encrypt DEK with age")
+    # Write DEK to a restricted temp file
+    fd, dek_path = _tf.mkstemp(prefix="engram-dek-", suffix=".bin")
+    enc_path = dek_path + ".encf"
+    try:
+        os.write(fd, dek)
+        os.fchmod(fd, 0o600)
+        os.close(fd)
 
-    return result.stdout
+        client = VaultClient()
+        try:
+            # pubkey arg is actually the tier name for sidecar protocol
+            client.encrypt(dek_path, enc_path, pubkey)
+        finally:
+            client.close()
+
+        with open(enc_path, "rb") as f:
+            return f.read()
+    finally:
+        # Securely remove plaintext DEK
+        if os.path.exists(dek_path):
+            os.unlink(dek_path)
+        if os.path.exists(enc_path):
+            os.unlink(enc_path)
 
 
-def decrypt_dek_with_privkey(encrypted_dek: bytes, private_key: str) -> bytes:
+def decrypt_dek_with_privkey(encrypted_dek: bytes, tier: str) -> bytes:
     """
-    Decrypt a DEK using an age private key (asymmetric).
+    Decrypt a DEK using the tier's private key via the sidecar.
 
-    Private key is piped via a process substitution fd — it NEVER
-    touches disk as a plaintext file. Encrypted DEK is piped via stdin.
-
-    Key material is stored as bytearray and zeroed after use (best effort
-    in Python, but zeroing mutable bytes is more reliable than reassigning
-    immutable strings).
+    The sidecar retrieves the private key from Keychain, decrypts
+    in-process using ML-KEM-768 + AES-256-GCM, and zeroes the key.
+    Python never sees any private key material.
 
     Args:
-        encrypted_dek: age ciphertext containing the encrypted DEK.
-        private_key: age private key string (AGE-SECRET-KEY-...).
+        encrypted_dek: Encrypted DEK bytes (.encf format).
+        tier: Tier whose private key to use (warm, cold, frozen).
 
     Returns:
         32-byte plaintext DEK.
     """
-    _check_age_cached()
+    import tempfile as _tf
+    from .vault import VaultClient
 
-    # Convert to bytearray for zeroing (mutable, unlike str)
-    key_bytes = bytearray(private_key.encode("utf-8"))
-
-    # Use a named pipe (FIFO) for the identity file — the key passes through
-    # the pipe and is never written to a regular file on disk.
-    fifo_dir = tempfile.mkdtemp(prefix="tm-")
-    fifo_path = os.path.join(fifo_dir, "identity")
-
+    fd, enc_path = _tf.mkstemp(prefix="engram-edek-", suffix=".encf")
+    dec_path = enc_path + ".dec"
     try:
-        os.mkfifo(fifo_path, mode=0o600)
+        os.write(fd, encrypted_dek)
+        os.fchmod(fd, 0o600)
+        os.close(fd)
 
-        # Start age reading from the FIFO (it blocks until the pipe is written)
-        proc = subprocess.Popen(
-            ["age", "-d", "-i", fifo_path],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        client = VaultClient()
+        try:
+            client.decrypt(enc_path, dec_path, tier)
+        finally:
+            client.close()
 
-        # Write private key to FIFO in a separate thread to avoid deadlock.
-        # FIFOs block on open() until both reader and writer are connected.
-        # age opens the read end; we must open the write end concurrently.
-        import threading
+        with open(dec_path, "rb") as f:
+            dek = f.read()
 
-        write_error: list[Exception] = []
-
-        def _write_fifo() -> None:
-            try:
-                with open(fifo_path, "wb") as fifo:
-                    fifo.write(key_bytes)
-            except Exception as e:
-                write_error.append(e)
-
-        writer = threading.Thread(target=_write_fifo, daemon=True)
-        writer.start()
-
-        # Send encrypted DEK via stdin, collect decrypted output
-        stdout, _stderr = proc.communicate(input=encrypted_dek, timeout=30)
-
-        writer.join(timeout=5)
-        if write_error:
-            raise EncryptionError(f"Failed to write key to FIFO: {write_error[0]}")
-
-        if proc.returncode != 0:
-            raise EncryptionError(
-                "Failed to decrypt DEK — wrong key or corrupted ciphertext"
-            )
-
-        dek = stdout
         if len(dek) != DEK_SIZE:
             raise EncryptionError(
                 f"Decrypted DEK has wrong size: {len(dek)} (expected {DEK_SIZE})"
             )
 
-        return bytes(dek)
+        return dek
     finally:
-        # Zero key material (bytearray is mutable — this actually overwrites memory)
-        for i in range(len(key_bytes)):
-            key_bytes[i] = 0
-
-        # Clean up FIFO — shutil.rmtree guarantees cleanup even if
-        # os.unlink or os.rmdir would fail (e.g., permission, race)
-        shutil.rmtree(fifo_dir, ignore_errors=True)
+        if os.path.exists(enc_path):
+            os.unlink(enc_path)
+        if os.path.exists(dec_path):
+            os.unlink(dec_path)
 
 
-# --- Cached age check (avoids 200+ PATH lookups during rotation) ---
-_age_checked: bool = False
-
-
-def _check_age_cached() -> None:
-    """Check age is installed, cached after first call."""
-    global _age_checked
-    if not _age_checked:
-        check_age_installed()
-        _age_checked = True
 
 
 class EnvelopeEncryptor:
@@ -373,14 +333,14 @@ class EnvelopeEncryptor:
 
     Encrypt path (public key only — no private key needed):
       1. Generate random per-artifact DEK
-      2. Encrypt DEK with tier's public key (age, asymmetric)
+      2. Encrypt DEK with tier's public key (sidecar, asymmetric)
       3. Store encrypted DEK in envelope header
       4. Return DEK for caller to encrypt the data
 
     Decrypt path (requires private key from vault):
       1. Read envelope header
       2. Retrieve tier's private key from configured source
-      3. Decrypt DEK with private key (age, asymmetric)
+      3. Decrypt DEK with private key (sidecar, asymmetric)
       4. Return DEK for caller to decrypt the data
 
     Key insight: ENCRYPTION NEVER TOUCHES THE PRIVATE KEY.
@@ -414,7 +374,7 @@ class EnvelopeEncryptor:
         # Generate unique random DEK for this artifact
         dek = generate_dek()
 
-        # Encrypt DEK with tier's public key (asymmetric, PQ hybrid via age)
+        # Encrypt DEK with tier's public key (asymmetric, PQ hybrid via sidecar)
         encrypted_dek = encrypt_dek_with_pubkey(dek, tier_keys.pubkey)
 
         # Compute plaintext hash for post-decrypt integrity check
@@ -551,159 +511,46 @@ class EnvelopeEncryptor:
         return count
 
     @staticmethod
-    def generate_tier_keypair() -> tuple[str, str]:
+    def generate_tier_keypair(tier: str) -> str:
         """
-        Generate a new age keypair for a tier.
+        Generate a new ML-KEM-768 + X25519 hybrid keypair for a tier.
 
-        Returns (public_key, private_key).
-        The caller decides where to store the private key.
-
-        The private key is captured as bytes and returned as a str only
-        after the raw bytes buffer has been zeroed.  This minimises the
-        window during which an immutable Python str containing the key
-        exists — the bytes buffer (which IS zeroable) is scrubbed before
-        the str is handed to the caller.
-
-        This is a convenience wrapper — users can also run
-        `age-keygen` directly.
-        """
-        check_age_installed()
-
-        keygen_path = shutil.which("age-keygen")
-        if not keygen_path:
-            raise EncryptionError("age-keygen not found")
-
-        # Capture stdout as raw bytes (text=False) so the private key
-        # never passes through an immutable Python str inside this function.
-        result = subprocess.run(
-            [keygen_path],
-            capture_output=True, text=False, timeout=10,
-        )
-        if result.returncode != 0:
-            raise EncryptionError("age-keygen failed")
-
-        # Work with a mutable bytearray so we can zero it when done.
-        raw = bytearray(result.stdout)
-        try:
-            # age-keygen outputs:
-            #   # created: <timestamp>
-            #   # public key: age1...
-            #   AGE-SECRET-KEY-1...
-            pubkey = ""
-            privkey = ""
-            for line_bytes in bytes(raw).split(b"\n"):
-                line = line_bytes.strip()
-                if line.startswith(b"# public key:"):
-                    pubkey = line.split(b"# public key:")[1].strip().decode("utf-8")
-                elif line.startswith(b"AGE-SECRET-KEY-"):
-                    privkey = line.decode("utf-8")
-
-            if not pubkey or not privkey:
-                raise EncryptionError("Failed to parse age-keygen output")
-
-            return pubkey, privkey
-        finally:
-            # Zero the mutable buffer that held the full keygen output
-            for i in range(len(raw)):
-                raw[i] = 0
-
-    @staticmethod
-    def store_private_key_in_keychain(
-        private_key: str,
-        tier: str,
-        service: str = "engram",
-    ) -> str:
-        """
-        Store a private key in macOS Keychain.
-
-        On Apple Silicon (M-series), Keychain items can be protected by
-        the user's login password and Touch ID prompt if configured.
-        Note: age/X25519 keys cannot be stored in the Secure Enclave
-        (it only supports P-256). Keys are in the software keychain
-        and are extractable by same-UID processes.
-        This means the private key is hardware-bound — it cannot be extracted
-        even with root access.
+        The sidecar generates the keypair and stores the private key
+        directly in the OS credential vault (Keychain/DPAPI/libsecret).
+        The private key NEVER enters Python.
 
         Args:
-            private_key: The age private key string.
-            tier: "warm" or "cold" (used as the account name).
-            service: Keychain service identifier.
+            tier: "warm", "cold", or "frozen".
 
         Returns:
-            The private_key_source string to put in config
-            (e.g., "keychain:engram:warm").
+            Public key hex string (for config).
         """
-        account = f"{tier}-key"
-
-        # Validate identifiers
-        for val in (service, account):
-            if not val.replace("-", "").replace("_", "").isalnum():
-                raise EncryptionError(f"Invalid keychain identifier: {val}")
-
-        # Check if entry already exists
-        check = subprocess.run(
-            ["security", "find-generic-password", "-s", service, "-a", account],
-            capture_output=True, text=True, timeout=10,
-        )
-        if check.returncode == 0:
-            # Update existing
-            subprocess.run(
-                ["security", "delete-generic-password", "-s", service, "-a", account],
-                capture_output=True, timeout=10,
-            )
-
-        # Add to Keychain — pass key via stdin, NOT as argv (argv visible in ps)
-        # -T "" means no application is trusted by default — user must authorize via Touch ID
-        result = subprocess.run(
-            ["security", "add-generic-password",
-             "-s", service, "-a", account,
-             "-w",  # reads password from stdin when no value follows
-             "-T", ""],
-            input=private_key, capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode != 0:
-            raise EncryptionError(
-                "Failed to store key in Keychain. Check Keychain access permissions."
-            )
-
-        return f"keychain:{service}:{account}"
+        from .vault import VaultClient
+        client = VaultClient()
+        try:
+            return client.keygen(tier)
+        finally:
+            client.close()
 
     @classmethod
     def setup_tier_with_keychain(
         cls, tier: str, service: str = "engram"
     ) -> tuple[str, str]:
         """
-        Full setup: generate keypair and store private key in macOS Keychain.
+        Full setup: generate keypair via sidecar, store in OS credential vault.
 
-        This is the recommended setup flow:
-          1. Generate age keypair
-          2. Store private key in Keychain (Touch ID protected on M-series)
-          3. Return public key (for config) and source string (for config)
-
-        The private key NEVER exists as a file on disk.
+        The sidecar handles everything — keygen + storage. Python never
+        sees the private key. Not even briefly.
 
         Args:
-            tier: "warm" or "cold".
-            service: Keychain service name.
+            tier: "warm", "cold", or "frozen".
+            service: Credential vault service name (unused, kept for API compat).
 
         Returns:
             (public_key, private_key_source) tuple.
             public_key goes in config.json under the tier's pubkey field.
-            private_key_source goes in the tier's private_key_source field.
+            private_key_source is the keychain reference string.
         """
-        # Generate keypair (private key exists only in memory briefly)
-        pubkey, privkey = cls.generate_tier_keypair()
-
-        # Store private key in Keychain immediately
-        source = cls.store_private_key_in_keychain(privkey, tier, service)
-
-        # Zero the private key from memory.
-        # Python strings are immutable — this overwrites the bytearray copy,
-        # but the original str from age-keygen may persist until GC.
-        # This is a known Python limitation, not a fixable bug.
-        key_buf = bytearray(privkey.encode("utf-8"))
-        for i in range(len(key_buf)):
-            key_buf[i] = 0
-        del privkey, key_buf
-
+        pubkey = cls.generate_tier_keypair(tier)
+        source = f"keychain:{service}:{tier}-key"
         return pubkey, source

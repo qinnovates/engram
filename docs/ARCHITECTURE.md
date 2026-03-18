@@ -88,7 +88,7 @@ When an artifact is first discovered, Engram builds a complete index entry befor
 
 | Step | What's Created | Stored In |
 |------|---------------|-----------|
-| SHA-256 hash | Integrity fingerprint | `artifact-registry.json` |
+| SHA-256 hash | Integrity fingerprint (quantum-safe: Grover reduces to 128-bit, above NIST SP 800-57 minimum) | `artifact-registry.json` |
 | Keyword extraction | Top 30 keywords by frequency | `semantic-index.json` |
 | Summary generation | First heading + paragraph (md), field names + count (jsonl) | `semantic-index.json` |
 | Embedding (if enabled) | 384-dim vector via all-MiniLM-L6-v2 | `embeddings-hot.npy` |
@@ -128,14 +128,15 @@ File: session-2025-09-12.jsonl (1.5 MB)
   │   1.0 MB → 340 KB (4.4x from original)
   │
   ├─ Stage 3 (if encryption enabled):
-  │   age encrypt with warm tier's public key
-  │   340 KB → 342 KB (.age file)
+  │   In-process Rust encrypt with warm tier's public key
+  │   ML-KEM-768 + X25519 hybrid KEM → AES-256-GCM
+  │   340 KB → 342 KB (.encf file)
   │   Public key only — no private key needed to encrypt
   │
   ├─ Original file deleted (or kept if keep_originals=true)
   │
   ├─ Metadata updated:
-  │   tier=warm, compressed_path=session.jsonl.zst.age
+  │   tier=warm, compressed_path=session.jsonl.zst.encf
   │
   ├─ Embedding truncated:
   │   384d float32 → 256d float32 (Matryoshka — drop last 128 dims)
@@ -148,14 +149,16 @@ File: session-2025-09-12.jsonl (1.5 MB)
 ### Full cold transition walkthrough
 
 ```
-Warm artifact: session.jsonl.zst.age (342 KB compressed+encrypted)
+Warm artifact: session.jsonl.zst.encf (342 KB compressed+encrypted)
   Age: 5 weeks (> 1 month threshold)
   Idle: 3 weeks (> 2 weeks threshold)
   Decision: WARM → COLD
 
   ├─ Decrypt (if encrypted):
   │   Rust sidecar retrieves warm private key from Keychain
-  │   Key piped to age via stdin, zeroed immediately
+  │   Key held in Zeroizing<T> wrapper in mlock'd memory
+  │   In-process ML-KEM-768 + X25519 decapsulation → HKDF-SHA256 → AES-256-GCM decrypt
+  │   Zeroizing drop fires on all exit paths (including errors and panics)
   │   342 KB → 340 KB (.zst file)
   │
   ├─ Decompress warm zstd back to raw content
@@ -178,7 +181,8 @@ Warm artifact: session.jsonl.zst.age (342 KB compressed+encrypted)
   │   400 KB → 150 KB (10x from original)
   │
   ├─ Stage 4 (if encryption):
-  │   age encrypt with cold tier's public key
+  │   In-process Rust encrypt with cold tier's public key
+  │   ML-KEM-768 + X25519 hybrid KEM → AES-256-GCM
   │   Different keypair than warm — compromise warm, cold stays safe
   │
   ├─ Embedding truncated:
@@ -193,12 +197,12 @@ Warm artifact: session.jsonl.zst.age (342 KB compressed+encrypted)
 ### Full frozen transition walkthrough
 
 ```
-Cold artifact: session.jsonl.cold.zst.age (152 KB compressed+encrypted)
+Cold artifact: session.jsonl.cold.zst.encf (152 KB compressed+encrypted)
   Age: 4 months (> 3 months threshold)
   Idle: 6 weeks (> 1 month threshold)
   Decision: COLD → FROZEN
 
-  ├─ Decrypt cold artifact (sidecar + cold private key)
+  ├─ Decrypt cold artifact (sidecar in-process crypto + cold private key)
   │
   ├─ Decompress cold zstd (using trained dictionary)
   │
@@ -229,7 +233,8 @@ Cold artifact: session.jsonl.cold.zst.age (152 KB compressed+encrypted)
   │   Result: 50 KB (30x from original 1.5 MB)
   │
   ├─ Stage 4 (if encryption):
-  │   age encrypt with frozen tier's public key
+  │   In-process Rust encrypt with frozen tier's public key
+  │   ML-KEM-768 + X25519 hybrid KEM → AES-256-GCM
   │   Third independent keypair
   │
   ├─ Embedding truncated:
@@ -372,7 +377,7 @@ engram recall ~/.claude/projects/.../session-2025-06.jsonl
   ├─ Step 1: Registry lookup
   │   Look up in artifact-registry.json:
   │     tier: cold
-  │     compressed_path: session-2025-06.jsonl.cold.zst.age
+  │     compressed_path: session-2025-06.jsonl.cold.zst.encf
   │     encrypted: true
   │     sha256: 92d54fa6...
   │
@@ -381,9 +386,9 @@ engram recall ~/.claude/projects/.../session-2025-06.jsonl
   │   Rust sidecar:
   │     → Retrieves cold private key from macOS Keychain
   │     → Touch ID prompt on Apple Silicon
-  │     → Key held in mlock'd memory (not swappable)
-  │     → Key piped to age via /dev/stdin (not argv, not disk)
-  │     → Key zeroed via zeroize immediately after
+  │     → Key held in Zeroizing<T> wrapper in mlock'd memory (not swappable)
+  │     → In-process ML-KEM-768 + X25519 decapsulation → HKDF-SHA256 → AES-256-GCM
+  │     → Zeroizing<T> drop fires on all exit paths (normal, error, panic)
   │     → Decrypted .zst file returned
   │   Python receives: "OK"
   │   Python never saw the private key.
@@ -422,14 +427,14 @@ When encryption is enabled, **everything** is encrypted:
 
 | Component | Encrypted? | How |
 |-----------|-----------|-----|
-| Compressed artifacts (.zst) | Yes | age with tier's public key (ML-KEM-768 hybrid) |
-| Semantic index (keywords, summaries) | Yes | Bundled into `index.tar.age` on lock |
+| Compressed artifacts (.zst) | Yes | In-process Rust crypto with tier's public key (ML-KEM-768 + X25519 hybrid KEM, AES-256-GCM) |
+| Semantic index (keywords, summaries) | Yes | Bundled into `index.tar.encf` on lock |
 | Embeddings (all .npy files) | Yes | Part of index bundle |
 | HNSW graphs (all .bin files) | Yes | Part of index bundle |
 | LSH hash tables (.npz) | Yes | Part of index bundle |
 | PQ codebook (.npz) | Yes | Part of index bundle |
 | Artifact registry (.json) | Yes | Part of index bundle |
-| Boilerplate store (prompt fragments) | Yes | Bundled into `boilerplate.tar.age` on lock |
+| Boilerplate store (prompt fragments) | Yes | Bundled into `boilerplate.tar.encf` on lock |
 | Audit log | Yes | Part of index bundle |
 | Compression dictionary | Yes | Part of index bundle |
 | Config file | No — contains public keys and key source identifiers (service/account names). Not secret but treat as sensitive metadata. | 0600 permissions |
@@ -441,7 +446,7 @@ The index is encrypted as a bundle at session end and decrypted at session start
 ```
 Session start:
   engram unlock (or any engram command auto-unlocks)
-    → Rust sidecar decrypts index.tar.age (Touch ID)
+    → Rust sidecar decrypts index.tar.encf (Touch ID)
     → Extracts all index files to ~/.engram/ with 0600 permissions
     → Index loaded into memory, ready for search
 
@@ -452,19 +457,38 @@ During session:
 Session end:
   engram lock
     → Bundles all index files into index.tar
-    → Rust sidecar encrypts to index.tar.age
+    → Rust sidecar encrypts to index.tar.encf
     → Deletes all plaintext index files
     → Deletes boilerplate store (encrypted separately)
-    → Only encrypted .age files remain on disk
+    → Only encrypted .encf files remain on disk
 ```
 
 When locked, an attacker with filesystem access sees only encrypted blobs. No keywords, no summaries, no embeddings, no file paths, no session metadata.
+
+### .encf v2 File Format
+
+All encrypted files use the `.encf` v2 binary format (no external tools required):
+
+```
+Offset  Size     Field
+0       4        ENCF magic bytes
+4       1        Version (2)
+5       2        KEM ciphertext length (little-endian)
+7       1088     ML-KEM-768 ciphertext
+1095    32       X25519 ephemeral public key
+1127    16       HKDF-SHA256 salt
+1143    12       AES-256-GCM nonce
+1155    8        Plaintext length (little-endian)
+1163    variable Ciphertext + 16-byte GCM authentication tag
+```
+
+Algorithms: ML-KEM-768 (FIPS 203) + X25519 hybrid KEM for key encapsulation, HKDF-SHA256 (SP 800-56C) for key derivation, AES-256-GCM (FIPS 197 + SP 800-38D) for authenticated encryption.
 
 ---
 
 ## Rust Crypto Sidecar
 
-`engram-vault` is a 364 KB compiled Rust binary that handles all private key operations.
+`engram-vault` is a compiled Rust binary that handles all cryptographic operations in-process. No external binaries (no `age`, no `openssl`). All crypto is performed using Rust crates directly.
 
 ### Why Rust, not Python
 
@@ -479,15 +503,21 @@ Python cannot securely handle private keys:
 ```
 Python sends:   DECRYPT <input> <output> <tier>
 Sidecar:        1. Reads private key from macOS Keychain (Security.framework)
-                2. Key exists in mlock'd memory (not swappable)
-                3. Pipes key to age via /dev/stdin (not argv, not disk)
-                4. Zeros key via zeroize crate (deterministic, not GC)
-                5. Core dumps disabled (setrlimit RLIMIT_CORE=0)
-                6. Environment cleared (.env_clear() on age subprocess)
+                   (pub(crate) visibility on all keychain functions for defense-in-depth)
+                   (tier validation inside keychain functions, redundant with main.rs)
+                   (set-first-then-delete-retry pattern to avoid destroying keys on failed writes)
+                2. Key held in Zeroizing<T> wrapper in mlock'd memory (not swappable)
+                3. In-process ML-KEM-768 + X25519 decapsulation
+                4. HKDF-SHA256 key derivation (ikm in Zeroizing<T>)
+                5. AES-256-GCM decryption (aes_key in Zeroizing<T>)
+                6. Zeroizing<T> drop fires on ALL exit paths — normal, error, and panic
+                7. Core dumps disabled (setrlimit RLIMIT_CORE=0)
+                8. Path traversal prevention: validate_path rejects ".." sequences
+                9. File size limit: 256 MB max to prevent mlock exhaustion
 Python receives: OK
 ```
 
-The private key never: enters Python, touches disk, appears in process arguments, hits swap, survives a crash dump.
+The private key never: enters Python, touches disk, appears in process arguments, hits swap, survives a crash dump. No external process is spawned — all crypto is in-process.
 
 ### Protocol
 
@@ -575,8 +605,8 @@ File paths, filenames, key sources, query strings, content, keywords, summaries,
 
 Every log line passes through regex-based detection before writing. If a line matches any pattern, it's replaced with `REDACTED`:
 
-- `AGE-SECRET-KEY-*` — age private keys
-- `age1*` — age public keys
+- `AGE-SECRET-KEY-*` — legacy age private keys
+- `age1*` — legacy age public keys
 - `-----BEGIN * KEY-----` — PEM keys
 - `ssh-(rsa|ed25519) *` — SSH keys
 - `AKIA*` — AWS access keys
@@ -593,7 +623,7 @@ Every log line passes through regex-based detection before writing. If a line ma
 
 ### Encrypted at rest
 
-When `engram lock` runs, the audit log is included in the encrypted index bundle. Only encrypted .age files remain on disk.
+When `engram lock` runs, the audit log is included in the encrypted index bundle. Only encrypted .encf files remain on disk.
 
 ---
 
@@ -672,7 +702,7 @@ Total index size for 10,000 artifacts across all tiers: ~10 MB (vs ~30 MB for fu
 
 - Compromised process with same-UID ptrace access
 - Attacker with your Keychain password
-- Trojanized `age` or `engram-vault` binary
+- Trojanized `engram-vault` binary
 - Root compromise on non-Secure-Enclave hardware
 - Malicious AI assistant that exfiltrates data before compression
 - Index metadata while unlocked during an active session

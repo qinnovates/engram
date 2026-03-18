@@ -19,7 +19,6 @@ Access-based promotion (cold -> hot on read):
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
 import zstandard as zstd
@@ -163,7 +162,7 @@ class TieringEngine:
 
         Bundles all index files (semantic index, embeddings, HNSW graphs,
         LSH tables, PQ codebook, registry, audit log, boilerplate cache)
-        into a single encrypted .age file. Plaintext deleted.
+        into a single encrypted .encf file. Plaintext deleted.
 
         After locking, the index cannot be searched until unlock.
         """
@@ -203,20 +202,20 @@ class TieringEngine:
         if enc.envelope_mode:
             return self._encrypt_envelope(compressed_path, tier)
         elif enc.recipient_pubkey:
-            return self._encrypt_simple(compressed_path)
+            return self._encrypt_simple(compressed_path, tier)
         else:
             return compressed_path, False
 
-    def _encrypt_simple(self, compressed_path: Path) -> tuple[Path, bool]:
-        """Simple mode: whole-file age encryption with single key."""
+    def _encrypt_simple(self, compressed_path: Path, tier: str = "warm") -> tuple[Path, bool]:
+        """Simple mode: whole-file encryption with single key via sidecar."""
         try:
             from .encryption import encrypt_file
-            encrypted_path = encrypt_file(compressed_path, self.config.encryption)
+            encrypted_path = encrypt_file(compressed_path, tier)
             compressed_path.unlink()
             return encrypted_path, True
-        except (OSError, subprocess.SubprocessError, EncryptionError):
+        except (OSError, EncryptionError):
             enc_candidate = compressed_path.with_suffix(
-                compressed_path.suffix + ".age"
+                compressed_path.suffix + ".encf"
             )
             if enc_candidate.exists():
                 enc_candidate.unlink()
@@ -228,9 +227,8 @@ class TieringEngine:
 
         Each artifact gets a unique 256-bit DEK. The DEK is encrypted
         asymmetrically with the tier's public key and stored in an
-        .envelope.json header. The data is encrypted with age using
-        the tier's public key (age handles the symmetric data encryption
-        internally via ChaCha20-Poly1305).
+        .envelope.json header. The data is encrypted via the Rust sidecar
+        using ML-KEM-768 + X25519 hybrid KEM and AES-256-GCM.
         """
         from .envelope import (
             EnvelopeEncryptor, AsymmetricKeyConfig, TierKeyPair,
@@ -270,11 +268,10 @@ class TieringEngine:
         encryptor = EnvelopeEncryptor(key_config)
         header, dek = encryptor.create_envelope(compressed_path, tier)
 
-        # Encrypt the data file with the tier's public key via age
-        from .encryption import encrypt_file, EncryptionConfig as SimpleEnc
-        simple_cfg = SimpleEnc(enabled=True, recipient_pubkey=tier_pubkey)
+        # Encrypt the data file with the tier's key via sidecar
+        from .encryption import encrypt_file
         try:
-            encrypted_path = encrypt_file(compressed_path, simple_cfg)
+            encrypted_path = encrypt_file(compressed_path, tier)
             compressed_path.unlink()
 
             # Store envelope header alongside encrypted file
@@ -285,9 +282,9 @@ class TieringEngine:
             atomic_write_text(header_path, header.to_json())
 
             return encrypted_path, True
-        except (OSError, subprocess.SubprocessError, EncryptionError):
+        except (OSError, EncryptionError):
             enc_candidate = compressed_path.with_suffix(
-                compressed_path.suffix + ".age"
+                compressed_path.suffix + ".encf"
             )
             if enc_candidate.exists():
                 enc_candidate.unlink()
@@ -297,72 +294,14 @@ class TieringEngine:
                           original_path: Path) -> Path:
         """Decrypt an envelope-encrypted artifact using the tier's private key.
 
-        Reads the .envelope.json header, resolves the tier's private key
-        from the configured source (Keychain, Vault, env), and decrypts.
+        The sidecar retrieves the private key from the OS credential vault,
+        decrypts in-process using ML-KEM-768 + AES-256-GCM, and zeroes
+        the key. Python never sees any private key material.
         """
-        enc = self.config.encryption
-        source_map = {
-            "warm": enc.warm_private_source,
-            "cold": enc.cold_private_source,
-            "frozen": enc.frozen_private_source,
-        }
-
-        private_source = source_map.get(tier)
-        if not private_source:
-            raise DecryptionRequiredError(
-                f"No private key source configured for {tier} tier. "
-                f"Set {tier}_private_source in encryption config.",
-                tier=tier, path=str(original_path),
-            )
-
-        # Resolve the private key from the configured source
-        from .envelope import _resolve_private_key
-        private_key = _resolve_private_key(private_source)
-
-        # Use FIFO (named pipe) — private key NEVER touches disk as a file.
-        # Same approach as envelope.py:decrypt_dek_with_privkey.
-        import os
-        import tempfile
-        import threading
-
-        # Per-call temp dir for FIFO — prevents reuse across concurrent calls
-        fifo_dir = tempfile.mkdtemp(prefix="engram-fifo-", dir=str(self.config.resolve_metadata_dir()))
-        os.chmod(fifo_dir, 0o700)
-        fifo_path = os.path.join(fifo_dir, "identity")
-
-        key_bytes = bytearray(private_key.encode("utf-8"))
-        try:
-            os.mkfifo(fifo_path, mode=0o600)
-
-            # age reads the identity from the FIFO
-            proc = subprocess.Popen(
-                ["age", "-d", "-i", fifo_path,
-                 "-o", str(encrypted_path.with_suffix("")),
-                 str(encrypted_path)],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-
-            # Write key to FIFO in thread (avoids deadlock)
-            def _write_fifo() -> None:
-                with open(fifo_path, "wb") as f:
-                    f.write(key_bytes)
-
-            writer = threading.Thread(target=_write_fifo, daemon=True)
-            writer.start()
-            _, stderr = proc.communicate(timeout=30)
-            writer.join(timeout=5)
-
-            if proc.returncode != 0:
-                raise EncryptionError("age decrypt failed for envelope recall")
-
-            return encrypted_path.with_suffix("")
-        finally:
-            # Zero key material
-            for i in range(len(key_bytes)):
-                key_bytes[i] = 0
-            # Clean up FIFO dir completely
-            import shutil
-            shutil.rmtree(fifo_dir, ignore_errors=True)
+        from .encryption import decrypt_file
+        output = encrypted_path.with_suffix("")
+        decrypt_file(encrypted_path, tier, output_path=output)
+        return output
 
     def scan(self) -> list[Path]:
         """
@@ -408,22 +347,19 @@ class TieringEngine:
     def _encrypt_hot_artifacts(self, paths: list[Path]) -> None:
         """Encrypt hot-tier artifacts in place (opt-in, off by default).
 
-        Only encrypts files that aren't already encrypted (.age).
+        Only encrypts files that aren't already encrypted (.encf).
         The encrypted file replaces the original. Recall requires
         decryption (Touch ID / vault access).
         """
         from .encryption import encrypt_file
         for p in paths:
-            if not p.exists() or p.name.endswith(".age"):
+            if not p.exists() or p.name.endswith(".encf"):
                 continue
-            # Verify metadata exists before encrypting — if not tracked,
-            # encrypting would orphan the file (original deleted, no registry entry)
             meta = self.metadata.get(p)
             if not meta:
                 continue
             try:
-                encrypted = encrypt_file(p, self.config.encryption,
-                                         remove_original=True)
+                encrypted = encrypt_file(p, "hot", remove_original=True)
                 meta.encrypted = True
                 meta.compressed_path = str(encrypted)
                 self.metadata._dirty = True
@@ -570,7 +506,7 @@ class TieringEngine:
         working_path = compressed
         if meta.encrypted and self.config.encryption.enabled:
             from .encryption import decrypt_file
-            working_path = decrypt_file(compressed, self.config.encryption)
+            working_path = decrypt_file(compressed, "warm")
 
         try:
             raw_path = decompress_file(working_path, remove_compressed=True)
@@ -640,10 +576,10 @@ class TieringEngine:
         if meta.encrypted and self.config.encryption.enabled:
             from .encryption import decrypt_file
             try:
-                working_path = decrypt_file(compressed, self.config.encryption)
-            except (OSError, subprocess.SubprocessError, EncryptionError) as e:
+                working_path = decrypt_file(compressed, "cold")
+            except (OSError, EncryptionError) as e:
                 raise DecryptionRequiredError(
-                    f"Failed to decrypt cold-tier artifact for frozen transition: {e}",
+                    f"Failed to decrypt cold-tier artifact for frozen transition: {type(e).__name__}",
                     tier=Tier.COLD.value, path=meta.path,
                 ) from e
 
@@ -768,10 +704,10 @@ class TieringEngine:
                         compressed, meta.tier, original_path
                     )
                 else:
-                    # Simple mode: use single identity path
+                    # Simple mode: use tier key via sidecar
                     from .encryption import decrypt_file
-                    working_path = decrypt_file(compressed, enc)
-            except (OSError, subprocess.SubprocessError, EncryptionError) as e:
+                    working_path = decrypt_file(compressed, meta.tier)
+            except (OSError, EncryptionError) as e:
                 raise DecryptionRequiredError(
                     f"Failed to decrypt {meta.tier}-tier artifact: {original_path}. "
                     f"Check that the correct private key is accessible. "

@@ -17,7 +17,7 @@ from pathlib import Path
 # --- Shared constants ---
 
 # File extensions to skip during scanning (already compressed/processed)
-SKIP_SUFFIXES = frozenset({".zst", ".age", ".tmp", ".parquet", ".gz"})
+SKIP_SUFFIXES = frozenset({".zst", ".encf", ".tmp", ".parquet", ".gz"})
 
 # Maximum content to read for indexing (100KB — long tail adds noise)
 MAX_INDEX_BYTES = 102_400

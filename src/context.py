@@ -136,6 +136,26 @@ class SemanticIndex:
         from .embeddings import EmbeddingIndex
         self._embedding_index = EmbeddingIndex(index_dir / "embeddings")
 
+        # HNSW + LSH indexed search (optional — gracefully degrades to brute-force)
+        self._hnsw_index = None
+        self._lsh_index = None
+        self._index_dir = index_dir
+        try:
+            from .vector_index import HNSWIndex
+            self._hnsw_index = HNSWIndex()
+            self._hnsw_index.load(index_dir)
+        except Exception:
+            pass
+        try:
+            from .lookup_tables import LSHIndex
+            lsh_path = index_dir / "lsh-tables.npz"
+            if lsh_path.exists():
+                self._lsh_index = LSHIndex.load(str(lsh_path))
+            else:
+                self._lsh_index = LSHIndex(dim=384)
+        except Exception:
+            pass
+
     # Known fields — filter out unknown keys to prevent injection/crash
     _KNOWN_FIELDS = {
         "path", "tier", "summary", "keywords", "line_count", "char_count",
@@ -195,6 +215,18 @@ class SemanticIndex:
         # Persist embedding index alongside the semantic index
         self._embedding_index.save()
 
+        # Persist HNSW and LSH indexes
+        if self._hnsw_index is not None:
+            try:
+                self._hnsw_index.save(self._index_dir)
+            except Exception:
+                pass
+        if self._lsh_index is not None:
+            try:
+                self._lsh_index.save(str(self._index_dir / "lsh-tables.npz"))
+            except Exception:
+                pass
+
     def index_artifact(self, path: Path, content: str, meta: ArtifactMeta) -> ArtifactSummary:
         """
         Index a file's content: extract keywords and generate summary.
@@ -228,6 +260,20 @@ class SemanticIndex:
 
         # Generate embedding for vector search (no-op if sentence-transformers missing)
         self._embedding_index.add(key, index_content, meta.tier)
+
+        # Add to HNSW and LSH indexes if available
+        embedding = self._embedding_index.get_embedding(key)
+        if embedding is not None:
+            if self._hnsw_index is not None:
+                try:
+                    self._hnsw_index.add(key, embedding, meta.tier)
+                except Exception:
+                    pass
+            if self._lsh_index is not None:
+                try:
+                    self._lsh_index.add(key, embedding)
+                except Exception:
+                    pass
 
         return entry
 
@@ -314,15 +360,52 @@ class SemanticIndex:
 
     def _vector_search(self, query: str,
                        max_results: int) -> list[ArtifactSummary]:
-        """Vector search via embedding index (returns [] if unavailable)."""
+        """Vector search via HNSW/LSH indexes or brute-force fallback.
+
+        Priority: HNSW (O(log n)) > LSH (O(1) approx) > brute-force.
+        """
         try:
             if not hasattr(self, '_embedding_index'):
                 return []
+
+            import copy
+
+            # Try HNSW first (best quality, O(log n))
+            if self._hnsw_index is not None and self._hnsw_index.total_count() > 0:
+                from .embeddings import _encode_text
+                query_vec = _encode_text(query)
+                if query_vec is not None:
+                    hnsw_results = self._hnsw_index.search(query_vec, top_k=max_results)
+                    if hnsw_results:
+                        mapped = []
+                        for path, score in hnsw_results:
+                            if path in self._entries:
+                                entry = copy.copy(self._entries[path])
+                                entry.relevance_score = score
+                                mapped.append(entry)
+                        if mapped:
+                            return mapped
+
+            # Try LSH fallback (approximate, O(1) per table)
+            if self._lsh_index is not None and any(self._lsh_index.tables):
+                from .embeddings import _encode_text
+                query_vec = _encode_text(query)
+                if query_vec is not None:
+                    lsh_results = self._lsh_index.search(query_vec, top_k=max_results)
+                    if lsh_results:
+                        mapped = []
+                        for path, score in lsh_results:
+                            if path in self._entries:
+                                entry = copy.copy(self._entries[path])
+                                entry.relevance_score = score
+                                mapped.append(entry)
+                        if mapped:
+                            return mapped
+
+            # Brute-force fallback via EmbeddingIndex
             results = self._embedding_index.search(query, top_k=max_results)
             if not results:
                 return []
-            # Map SearchResult objects to ArtifactSummary
-            import copy
             mapped = []
             for sr in results:
                 key = sr.artifact_path if hasattr(sr, 'artifact_path') else str(sr)

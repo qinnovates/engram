@@ -179,10 +179,10 @@ def discover_installed_assistants() -> dict[str, list[ScanTarget]]:
 def iter_artifacts(targets: list[ScanTarget]) -> Iterator[Path]:
     """
     Yield all artifact files matching the given scan targets.
-    Skips already-compressed (.zst), encrypted (.age), temp (.tmp),
+    Skips already-compressed (.zst), encrypted (.encf), temp (.tmp),
     Parquet (.parquet), and symlinks.
     """
-    skip_suffixes = {".zst", ".age", ".tmp", ".parquet"}
+    skip_suffixes = {".zst", ".encf", ".tmp", ".parquet"}
 
     for target in targets:
         base = target.resolve()

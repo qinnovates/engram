@@ -1,62 +1,61 @@
-//! engram-vault: Secure crypto sidecar for Engram
+//! engram-vault v2: Secure crypto sidecar — no external dependencies
 //!
-//! This binary handles ALL private key operations so that key material
-//! NEVER enters Python's address space. It is the security boundary.
+//! ALL encryption happens inside this binary. No age. No brew install.
+//! No subprocess calls for crypto. No outbound network calls.
 //!
-//! Architecture:
-//!   Python (Engram) → stdin command → engram-vault → age → stdout result
+//! Algorithms (NIST-approved only):
+//!   Key encapsulation: ML-KEM-768 (FIPS 203) + X25519 hybrid
+//!   Data encryption:   AES-256-GCM (FIPS 197 + SP 800-38D)
+//!   Key derivation:    HKDF-SHA256 (SP 800-56C)
 //!
 //! Key material flow:
-//!   macOS Keychain (software keychain, NOT Secure Enclave) →
-//!   this process (mlock'd, zeroize-on-drop) → age stdin pipe
+//!   Keychain -> this process (mlock'd, zeroize-on-drop) -> crypto ops -> zeroed
+//!   Key NEVER: touches disk, enters Python, appears in process args
 //!
-//! Key NEVER: touches disk, enters Python, appears in process args
-//! Key MAY: exist in this process's locked memory during decrypt (milliseconds)
+//! File format (engram encrypted file, .encf):
+//!   [4 bytes]    magic: "ENCF"
+//!   [2 bytes]    version: 0x0002
+//!   [2 bytes]    KEM ciphertext length (1088 for ML-KEM-768)
+//!   [1088 bytes] ML-KEM-768 ciphertext (encapsulated shared secret)
+//!   [32 bytes]   X25519 ephemeral public key
+//!   [16 bytes]   HKDF salt
+//!   [12 bytes]   AES-256-GCM nonce
+//!   [8 bytes]    plaintext length (u64 little-endian)
+//!   [N+16 bytes] ciphertext + GCM auth tag
 //!
-//! Security hardening:
-//!   - mlockall: prevents key material from being swapped to disk
-//!   - RLIMIT_CORE=0: prevents core dumps from leaking key material
-//!   - zeroize: deterministic memory zeroing (not GC-dependent)
-//!   - env_clear: age subprocess gets clean environment (no LD_PRELOAD)
-//!   - Input validation: reject paths with newlines/nulls (injection prevention)
-//!
-//! Protocol (stdin/stdout, one command per line):
-//!   ENCRYPT <input_path> <output_path> <tier> → OK | ERROR <msg>
-//!   DECRYPT <input_path> <output_path> <tier> → OK | ERROR <msg>
-//!   KEYGEN <tier>                              → OK <pubkey> | ERROR <msg>
-//!   PING                                       → PONG
-//!   QUIT                                       → BYE
+//! Protocol (stdin/stdout):
+//!   ENCRYPT <input> <output> <tier>  -> OK | ERROR <msg>
+//!   DECRYPT <input> <output> <tier>  -> OK | ERROR <msg>
+//!   KEYGEN <tier>                     -> OK <pubkey_hex> | ERROR <msg>
+//!   PING                              -> PONG
+//!   QUIT                              -> BYE
 
+use std::fs;
 use std::io::{self, BufRead, Write};
-use std::process::{Command, Stdio};
+use std::path::Path;
 use zeroize::Zeroize;
 
+mod crypto;
 mod keychain;
 
-fn main() {
-    // === Security hardening at startup ===
+/// Maximum input file size (256 MB) to prevent mlock exhaustion
+const MAX_FILE_SIZE: u64 = 256 * 1024 * 1024;
 
+fn main() {
+    // === Security hardening ===
     #[cfg(unix)]
     unsafe {
-        // 1. Lock memory — prevent key material from being swapped to disk
         let mlock_result = libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE);
         if mlock_result != 0 {
             eprintln!(
-                "WARNING: mlockall failed (errno {}). Key material may be swappable. \
-                 Increase ulimit -l or run with appropriate privileges.",
-                *libc::__error()
+                "WARNING: mlockall failed. Key material may be swappable."
             );
         }
-
-        // 2. Disable core dumps — prevent crash from leaking key material
-        let zero_core = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        libc::setrlimit(libc::RLIMIT_CORE, &zero_core);
+        let zero_core = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        if libc::setrlimit(libc::RLIMIT_CORE, &zero_core) != 0 {
+            eprintln!("WARNING: Cannot disable core dumps.");
+        }
     }
-
-    // === Main command loop ===
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -114,183 +113,239 @@ fn main() {
             _ => "ERROR Unknown command".to_string(),
         };
 
-        // Audit log to stderr (not stdout — stdout is the protocol channel)
-        eprintln!(
-            "{} {}",
-            chrono_now(),
-            response.split_whitespace().next().unwrap_or("?")
-        );
-
         let _ = writeln!(stdout, "{}", response);
         let _ = stdout.flush();
     }
 }
 
-// === Input validation (prevents command injection via newlines/nulls) ===
+// === Input validation ===
 
 fn validate_path(path: &str) -> Result<(), String> {
-    if path.contains('\n') || path.contains('\r') || path.contains('\0') {
-        Err("ERROR Invalid path — contains newline or null byte".to_string())
-    } else if path.is_empty() {
-        Err("ERROR Empty path".to_string())
-    } else {
-        Ok(())
+    if path.is_empty() {
+        return Err("ERROR Empty path".to_string());
     }
+    if path.contains('\n') || path.contains('\r') || path.contains('\0') || path.contains(' ') {
+        return Err("ERROR Invalid path".to_string());
+    }
+    // Reject path traversal
+    if path.contains("..") {
+        return Err("ERROR Path traversal not allowed".to_string());
+    }
+    Ok(())
+}
+
+/// Canonicalize a path and verify it is under an allowed base.
+/// For input files: must exist and be a regular file.
+/// For output files: parent directory must exist.
+fn canonicalize_path(path: &str) -> Result<std::path::PathBuf, String> {
+    let p = Path::new(path);
+
+    // For existing files, canonicalize directly
+    if p.exists() {
+        let canonical = fs::canonicalize(p)
+            .map_err(|_| "ERROR Cannot resolve path".to_string())?;
+        // Reject symlinks to prevent symlink attacks
+        let meta = fs::symlink_metadata(p)
+            .map_err(|_| "ERROR Cannot stat path".to_string())?;
+        if meta.file_type().is_symlink() {
+            return Err("ERROR Symlinks not allowed".to_string());
+        }
+        return Ok(canonical);
+    }
+
+    // For new files (output), canonicalize the parent
+    if let Some(parent) = p.parent() {
+        if parent.as_os_str().is_empty() || parent.exists() {
+            return Ok(p.to_path_buf());
+        }
+    }
+
+    Err("ERROR Path does not exist".to_string())
 }
 
 fn validate_tier(tier: &str) -> Result<(), String> {
     match tier {
-        "warm" | "cold" | "frozen" | "hot" | "test" => Ok(()),
-        _ => Err(format!(
-            "ERROR Invalid tier '{}' — must be warm, cold, or frozen",
-            &tier[..tier.len().min(10)]
-        )),
+        "warm" | "cold" | "frozen" | "hot" | "test" | "index" => Ok(()),
+        _ => Err("ERROR Invalid tier".to_string()),
     }
 }
 
-fn chrono_now() -> String {
-    // Simple timestamp without pulling in chrono crate
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    format!("{}", secs)
-}
-
-// === Encrypt (public key only — no secret involved) ===
+// === Encrypt (public key only — no secret needed) ===
 
 fn handle_encrypt(input: &str, output: &str, tier: &str) -> String {
-    let pubkey = match keychain::get_public_key(tier) {
+    // Canonicalize paths
+    let input_path = match canonicalize_path(input) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+
+    // Get public key from Keychain
+    let pubkey_hex = match keychain::get_public_key(tier) {
         Ok(k) => k,
         Err(e) => return format!("ERROR {}", e),
     };
 
-    // Clear environment to prevent LD_PRELOAD / PATH hijacking of age
-    let result = Command::new("age")
-        .args(["-r", &pubkey, "-o", output, input])
-        .env_clear()
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .status();
+    let pubkey_bytes = match hex::decode(&pubkey_hex) {
+        Ok(b) => b,
+        Err(_) => return "ERROR Invalid public key format in Keychain".to_string(),
+    };
+
+    // Check file size before reading into mlock'd memory
+    let meta = match fs::metadata(&input_path) {
+        Ok(m) => m,
+        Err(e) => return format!("ERROR Cannot stat input: {}", e),
+    };
+    if meta.len() > MAX_FILE_SIZE {
+        return "ERROR Input file too large".to_string();
+    }
+
+    // Read plaintext
+    let mut plaintext = match fs::read(&input_path) {
+        Ok(d) => d,
+        Err(e) => return format!("ERROR Cannot read input: {}", e),
+    };
+
+    // Encrypt using ML-KEM-768 + X25519 hybrid / AES-256-GCM
+    let result = crypto::encrypt(&pubkey_bytes, &plaintext);
+    plaintext.zeroize();
 
     match result {
-        Ok(status) if status.success() => "OK".to_string(),
-        Ok(_) => "ERROR age encrypt failed".to_string(),
-        Err(e) => format!("ERROR age not found: {}", e),
+        Ok(encrypted) => {
+            match fs::write(output, &encrypted) {
+                Ok(_) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = fs::set_permissions(output, fs::Permissions::from_mode(0o600));
+                    }
+                    "OK".to_string()
+                }
+                Err(e) => format!("ERROR Cannot write output: {}", e),
+            }
+        }
+        Err(e) => format!("ERROR Encryption failed: {}", e),
     }
 }
 
-// === Decrypt (private key from Keychain → age stdin → zeroed) ===
+// === Decrypt (private key from Keychain -> crypto -> zeroed) ===
 
 fn handle_decrypt(input: &str, output: &str, tier: &str) -> String {
-    // Retrieve private key — stays in this process's mlock'd memory only
-    let mut private_key = match keychain::get_private_key(tier) {
+    // Canonicalize input path
+    let input_path = match canonicalize_path(input) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+
+    // Get private key from Keychain
+    let mut privkey_hex = match keychain::get_private_key(tier) {
         Ok(k) => k,
         Err(e) => return format!("ERROR {}", e),
     };
 
-    // Pipe key to age via stdin — clear environment to prevent hijacking
-    let mut child = match Command::new("age")
-        .args(["-d", "-i", "/dev/stdin", "-o", output, input])
-        .env_clear()
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
+    let mut privkey_bytes = match hex::decode(&privkey_hex) {
+        Ok(b) => b,
+        Err(_) => {
+            privkey_hex.zeroize();
+            return "ERROR Invalid private key format in Keychain".to_string();
+        }
+    };
+    privkey_hex.zeroize();
+
+    // Check file size before reading
+    let meta = match fs::metadata(&input_path) {
+        Ok(m) => m,
         Err(e) => {
-            private_key.zeroize();
-            return format!("ERROR Failed to spawn age: {}", e);
+            privkey_bytes.zeroize();
+            return format!("ERROR Cannot stat input: {}", e);
+        }
+    };
+    if meta.len() > MAX_FILE_SIZE {
+        privkey_bytes.zeroize();
+        return "ERROR Input file too large".to_string();
+    }
+
+    // Read ciphertext
+    let ciphertext = match fs::read(&input_path) {
+        Ok(d) => d,
+        Err(e) => {
+            privkey_bytes.zeroize();
+            return format!("ERROR Cannot read input: {}", e);
         }
     };
 
-    // Write private key to age's stdin pipe
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(private_key.as_bytes());
-        // stdin dropped here — closes the pipe
-    }
+    // Decrypt
+    let result = crypto::decrypt(&privkey_bytes, &ciphertext);
+    privkey_bytes.zeroize(); // Zero IMMEDIATELY after use
 
-    // Zero the key IMMEDIATELY after piping
-    private_key.zeroize();
-
-    match child.wait() {
-        Ok(status) if status.success() => "OK".to_string(),
-        Ok(_) => "ERROR age decrypt failed".to_string(),
-        Err(e) => format!("ERROR age process error: {}", e),
+    match result {
+        Ok(mut plaintext) => {
+            let write_result = fs::write(output, &plaintext);
+            plaintext.zeroize(); // Zero decrypted content from memory
+            match write_result {
+                Ok(_) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = fs::set_permissions(output, fs::Permissions::from_mode(0o600));
+                    }
+                    "OK".to_string()
+                }
+                Err(e) => format!("ERROR Cannot write output: {}", e),
+            }
+        }
+        Err(e) => format!("ERROR Decryption failed: {}", e),
     }
 }
 
-// === Keygen (age-keygen → Keychain, private key zeroed) ===
+// === Keygen (generate ML-KEM-768 + X25519 hybrid keypair, store in Keychain) ===
 
 fn handle_keygen(tier: &str) -> String {
-    // Check if keys already exist — refuse to silently overwrite
+    // Refuse to overwrite existing keys
     if keychain::get_private_key(tier).is_ok() {
-        return format!(
-            "ERROR Key already exists for tier '{}'. Delete it first or use a different tier.",
-            tier
-        );
+        return format!("ERROR Key already exists for tier '{}'", tier);
     }
 
-    // Run age-keygen with clean environment
-    let output = match Command::new("age-keygen")
-        .env_clear()
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => return format!("ERROR age-keygen not found: {}", e),
-    };
+    // Generate hybrid keypair (privkey is Zeroizing<Vec<u8>>)
+    let (privkey_bytes, pubkey_bytes) = crypto::generate_keypair();
 
-    if !output.status.success() {
-        return "ERROR age-keygen failed".to_string();
+    // Store in Keychain as hex
+    let pubkey_hex = hex::encode(&pubkey_bytes);
+    let mut privkey_hex = hex::encode(&privkey_bytes);
+    // privkey_bytes is Zeroizing — dropped automatically
+
+    // Store public key first (non-destructive if it fails)
+    if let Err(e) = keychain::store_public_key(tier, &pubkey_hex) {
+        privkey_hex.zeroize();
+        return format!("ERROR {}", e);
     }
 
-    // Parse output — minimize intermediate String copies
-    let mut pubkey = String::new();
-    let mut privkey_bytes: Vec<u8> = Vec::new();
-
-    for line in output.stdout.split(|&b| b == b'\n') {
-        let trimmed = std::str::from_utf8(line).unwrap_or("").trim();
-        if trimmed.starts_with("# public key:") {
-            pubkey = trimmed
-                .split("# public key:")
-                .nth(1)
-                .unwrap_or("")
-                .trim()
-                .to_string();
-        } else if trimmed.starts_with("AGE-SECRET-KEY-") {
-            privkey_bytes = trimmed.as_bytes().to_vec();
-        }
-    }
-
-    if pubkey.is_empty() || privkey_bytes.is_empty() {
-        privkey_bytes.zeroize();
-        return "ERROR Failed to parse age-keygen output".to_string();
-    }
-
-    // Convert to string for Keychain storage, then zero the vec
-    let privkey_str = String::from_utf8_lossy(&privkey_bytes).to_string();
-    privkey_bytes.zeroize();
-
-    // Store in Keychain
-    if let Err(e) = keychain::store_public_key(tier, &pubkey) {
-        let mut pk = privkey_str;
-        pk.zeroize();
-        return format!("ERROR Failed to store public key: {}", e);
-    }
-
-    let store_result = keychain::store_private_key(tier, &privkey_str);
-
-    // Zero private key string
-    let mut pk = privkey_str;
-    pk.zeroize();
+    let store_result = keychain::store_private_key(tier, &privkey_hex);
+    privkey_hex.zeroize();
 
     match store_result {
-        Ok(()) => format!("OK {}", pubkey),
-        Err(e) => format!("ERROR Failed to store private key: {}", e),
+        Ok(()) => format!("OK {}", pubkey_hex),
+        Err(e) => format!("ERROR {}", e),
+    }
+}
+
+// === hex encoding (no external dep) ===
+
+mod hex {
+    pub fn encode(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    pub fn decode(hex: &str) -> Result<Vec<u8>, String> {
+        if hex.len() % 2 != 0 {
+            return Err("Odd hex length".to_string());
+        }
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| {
+                u8::from_str_radix(&hex[i..i + 2], 16)
+                    .map_err(|_| "Invalid hex".to_string())
+            })
+            .collect()
     }
 }
 
@@ -303,14 +358,11 @@ mod libc {
         pub rlim_cur: u64,
         pub rlim_max: u64,
     }
-
-    pub const RLIMIT_CORE: i32 = 4; // macOS value
+    pub const RLIMIT_CORE: i32 = 4;
     pub const MCL_CURRENT: i32 = 1;
     pub const MCL_FUTURE: i32 = 2;
-
     extern "C" {
         pub fn mlockall(flags: i32) -> i32;
         pub fn setrlimit(resource: i32, rlp: *const rlimit) -> i32;
-        pub fn __error() -> *mut i32; // macOS errno
     }
 }

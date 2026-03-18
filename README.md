@@ -74,7 +74,8 @@ Add post-quantum encryption and the tiers become actual access barriers: even wi
 ## Quick Start
 
 ```bash
-pip install engram
+pip install bci-engram                   # install from PyPI
+pip install bci-engram[embeddings]       # with semantic search (recommended)
 engram init                              # guided setup
 engram run --dry-run                     # preview (safe, no changes)
 engram run                               # compress + encrypt
@@ -107,7 +108,7 @@ All thresholds configurable. Choose 2-tier (simple) or 4-tier (full) during setu
 
 **Hybrid search.** Every artifact is indexed with keywords, embeddings, LSH hashes, and HNSW graph entries before compression. Search uses a 6-layer retrieval stack: keyword lookup, LSH hash tables, HNSW nearest-neighbor graphs, Reciprocal Rank Fusion (BM25 + vector), optional reranking, and summary output. The index (~1 MB keywords + ~10 MB embeddings for 10K artifacts) is always loaded, never compressed. Search across all tiers without decompressing anything. Summaries load at 10-20% of token cost. Full recall on demand.
 
-**Everything local.** No data leaves your machine. No telemetry. No cloud dependency. Zero network calls.
+**Everything local.** No data leaves your machine. No telemetry. No cloud dependency. Zero network calls. Embedding model (`all-MiniLM-L6-v2`, ~80 MB) runs entirely in-process on CPU — no external API, no cloud inference. HNSW and LSH indexes operate on these local embeddings. Without the embedding model, keyword search still works.
 
 ---
 
@@ -262,17 +263,36 @@ engram/
 - PQ encryption (ML-KEM-768 + X25519 hybrid)
 - Per-artifact DEKs in envelope mode
 - Audit logging with regex PII/secret detection
-- SHA-256 integrity verification
+- SHA-256 integrity verification (quantum-safe: Grover reduces to 128-bit equivalent, well above NIST minimum per SP 800-57)
 - Symlink protection, path containment, sensitive directory blocklist
 - Input validation (newlines/nulls rejected in protocol)
 - Core dumps disabled, memory locked, environment cleared
 - No `shell=True` anywhere
+- Embedding model supply chain verification (SHA-256 checksum on load)
+
+### Third-party model verification
+
+Engram uses one third-party model for semantic search (optional):
+
+| Property | Value |
+|----------|-------|
+| Model | `sentence-transformers/all-MiniLM-L6-v2` |
+| License | Apache 2.0 |
+| Size | 86.7 MB (model.safetensors) |
+| Parameters | 22.7M |
+| SHA-256 | `53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db` |
+| Downloads | 207M+ (widely vetted) |
+| Runs | 100% local, in-process, CPU. No API calls. |
+
+The checksum is verified on every model load. If the cached weights don't match the expected hash, Engram refuses to load the model and logs a security error. This detects supply chain tampering via compromised HuggingFace cache, typosquatted packages, or modified downloads.
+
+Without the embedding model, keyword search still works. The model is an optional dependency (`pip install engram[embeddings]`).
 
 ### Threat model
 
 **Protects against:** data at rest on stolen devices, harvest-now-decrypt-later, unauthorized disk reads, forensics on decommissioned hardware.
 
-**Does NOT protect against:** compromised process with same-UID ptrace, attacker with your Keychain password, trojanized `age` binary, root compromise on non-Secure-Enclave hardware.
+**Does NOT protect against:** compromised process with same-UID ptrace, attacker with your Keychain password, trojanized `engram-vault` binary, root compromise on non-Secure-Enclave hardware.
 
 ### Recommendations
 
@@ -306,7 +326,7 @@ All thresholds configurable in `~/.engram/config.json`:
   "encryption": {
     "enabled": true,
     "envelope_mode": true,
-    "warm_pubkey": "age1...",
+    "warm_pubkey": "<hex from KEYGEN>",
     "warm_private_source": "keychain:engram:warm-key"
   },
   "audit_log": false
@@ -337,9 +357,15 @@ Setup modes: `engram init` (guided), `--mode interactive` (pick locations), `--m
 
 ## Requirements
 
+```bash
+pip install bci-engram                   # core (compression + indexing)
+pip install bci-engram[embeddings]       # + semantic search (recommended)
+```
+
 - Python 3.10+
 - `zstandard` >= 0.19.0 (auto-installed)
 - `pyarrow` >= 14.0.0 (auto-installed, for frozen Parquet tier)
+- `sentence-transformers` >= 2.2.0 (optional, for semantic search) — `pip install bci-engram[embeddings]`
 - Rust toolchain (optional, to build the crypto sidecar) — `brew install rust` (macOS) or see [rustup.rs](https://rustup.rs)
 
 ---

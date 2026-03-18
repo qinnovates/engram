@@ -1,17 +1,33 @@
 [package]
 name = "engram-vault"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2021"
-description = "Secure crypto sidecar for Engram. Handles key retrieval and age encryption/decryption so private keys never enter Python's address space."
+description = "Secure crypto sidecar for Engram. NIST-approved algorithms only. No external tools. No outbound calls. Private keys never enter Python."
 license = "MIT"
 
 [dependencies]
-# Zero-on-drop for key material — deterministic memory zeroing
+# ML-KEM-768 (NIST FIPS 203) — post-quantum key encapsulation
+ml-kem = { version = "0.2", features = ["zeroize"] }
+
+# AES-256-GCM (NIST FIPS 197 + SP 800-38D) — authenticated encryption
+aes-gcm = { version = "0.10", features = ["aes"] }
+
+# HKDF-SHA256 (NIST SP 800-56C) — key derivation
+hkdf = "0.12"
+sha2 = "0.10"
+
+# X25519 for classical key agreement (hybrid with ML-KEM)
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+# Zero-on-drop — deterministic memory zeroing
 zeroize = { version = "1", features = ["zeroize_derive"] }
-# macOS Security.framework bindings
+
+# macOS Keychain — Security.framework bindings
 security-framework = "3"
 
+# Cryptographic randomness (OS-provided, SP 800-90A compliant)
+rand = "0.8"
+
 [profile.release]
-# Strip debug info to reduce binary size
 strip = true
 lto = true

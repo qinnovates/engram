@@ -144,7 +144,8 @@ class VaultClient:
         """Decrypt a file using the tier's private key.
 
         Private key is retrieved from Keychain by the sidecar,
-        piped to age via stdin, then zeroed. Python never sees it.
+        used for in-process ML-KEM + AES-256-GCM decryption,
+        then zeroed via Zeroizing<T>. Python never sees it.
         """
         self._validate_input(str(input_path), "input_path")
         self._validate_input(str(output_path), "output_path")

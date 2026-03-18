@@ -33,7 +33,7 @@ def _count_artifacts(target: ScanTarget) -> tuple[int, int]:
     pattern = f"**/{target.pattern}" if target.recursive else target.pattern
     count = 0
     total_bytes = 0
-    skip = {".zst", ".age", ".tmp", ".parquet"}
+    skip = {".zst", ".encf", ".tmp", ".parquet"}
 
     for match in base.glob(pattern):
         if match.is_file() and not match.is_symlink() and match.suffix not in skip:
@@ -203,7 +203,7 @@ def run_guided_setup(config_path: Path) -> EngineConfig:
     # Step 5: Encryption
     print()
     encryption_enabled = _input_yn(
-        "Enable post-quantum encryption (ML-KEM-768)? Requires `brew install age`",
+        "Enable post-quantum encryption (ML-KEM-768)? Requires the engram-vault sidecar",
         default=False,
     )
 
@@ -370,7 +370,7 @@ def _analyze_file_ages(targets: list[ScanTarget], policy: TierPolicy) -> dict:
     """Analyze file ages to predict tier distribution before running."""
     import time
     counts = {"hot": 0, "warm": 0, "cold": 0, "frozen": 0}
-    skip = {".zst", ".age", ".tmp", ".parquet"}
+    skip = {".zst", ".encf", ".tmp", ".parquet"}
 
     for t in targets:
         base = t.resolve()

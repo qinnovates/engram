@@ -116,7 +116,7 @@ class ScanTarget:
 
 @dataclass
 class EncryptionConfig:
-    """Optional PQKC encryption via age (ML-KEM-768 hybrid).
+    """Optional PQKC encryption via engram-vault sidecar (ML-KEM-768 + AES-256-GCM).
 
     Two modes:
       SIMPLE (default): Single recipient key for all tiers.

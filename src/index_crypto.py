@@ -53,7 +53,7 @@ INDEX_FILES = [
 ]
 
 INDEX_BUNDLE = "index.tar"
-INDEX_BUNDLE_ENCRYPTED = "index.tar.age"
+INDEX_BUNDLE_ENCRYPTED = "index.tar.encf"
 INDEX_TIER = "hot"  # Use the hot tier key for index encryption
 
 
@@ -88,7 +88,7 @@ class IndexCrypto:
         """Encrypt the index: bundle all index files → encrypt → delete plaintext.
 
         Call this at session end or when Engram is not actively running.
-        After locking, the index is a single encrypted .age file.
+        After locking, the index is a single encrypted .encf file.
         """
         if not self.has_index_files():
             return  # Nothing to lock
@@ -131,13 +131,13 @@ class IndexCrypto:
                     if f.is_file():
                         tar.add(str(f), arcname=f.name)
             os.chmod(str(bp_tar), 0o600)
-            bp_enc = self.engram_dir / "boilerplate.tar.age"
+            bp_enc = self.engram_dir / "boilerplate.tar.encf"
             vault.encrypt(bp_tar, bp_enc, INDEX_TIER)
             bp_tar.unlink(missing_ok=True)
             shutil.rmtree(boilerplate_dir)
 
     def unlock(self) -> None:
-        """Decrypt the index: decrypt .age → extract tarball → index files restored.
+        """Decrypt the index: decrypt .encf -> extract tarball -> index files restored.
 
         Call this at session start before any search, context, or tier operations.
         Requires Touch ID / vault access for the private key.
@@ -180,7 +180,7 @@ class IndexCrypto:
         self.bundle_path.unlink(missing_ok=True)
 
         # Restore boilerplate if encrypted
-        bp_enc = self.engram_dir / "boilerplate.tar.age"
+        bp_enc = self.engram_dir / "boilerplate.tar.encf"
         if bp_enc.exists():
             bp_tar = self.engram_dir / "boilerplate.tar"
             vault.decrypt(bp_enc, bp_tar, INDEX_TIER)
