@@ -28,6 +28,7 @@ class Tier(str, Enum):
     HOT = "hot"
     WARM = "warm"
     COLD = "cold"
+    FROZEN = "frozen"
 
 
 @dataclass
@@ -189,11 +190,21 @@ class MetadataStore:
             and a.idle_hours >= idle_hours
         ]
 
+    def candidates_for_frozen(self, age_hours: float, idle_hours: float) -> list[ArtifactMeta]:
+        """Find cold artifacts eligible for frozen tier (deep archive)."""
+        return [
+            a for a in self._artifacts.values()
+            if a.tier == Tier.COLD.value
+            and a.age_hours >= age_hours
+            and a.idle_hours >= idle_hours
+        ]
+
     def stats(self) -> dict:
         """Return summary statistics."""
         hot = self.by_tier(Tier.HOT)
         warm = self.by_tier(Tier.WARM)
         cold = self.by_tier(Tier.COLD)
+        frozen = self.by_tier(Tier.FROZEN)
 
         total_original = sum(a.original_size for a in self._artifacts.values())
         total_compressed = sum(
@@ -207,6 +218,7 @@ class MetadataStore:
             "hot_count": len(hot),
             "warm_count": len(warm),
             "cold_count": len(cold),
+            "frozen_count": len(frozen),
             "total_original_bytes": total_original,
             "total_compressed_bytes": total_compressed,
             "total_hot_bytes": total_hot_size,

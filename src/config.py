@@ -22,12 +22,15 @@ from typing import Optional
 # --- Default thresholds (in hours) ---
 DEFAULT_HOT_TO_WARM_AGE_HOURS = 48       # 2 days without access -> warm
 DEFAULT_WARM_TO_COLD_AGE_HOURS = 336     # 14 days without access -> cold
+DEFAULT_COLD_TO_FROZEN_AGE_HOURS = 2160  # 90 days without access -> frozen
 DEFAULT_HOT_TO_WARM_IDLE_HOURS = 24      # no access in 24h -> eligible for warm
 DEFAULT_WARM_TO_COLD_IDLE_HOURS = 168    # no access in 7d -> eligible for cold
+DEFAULT_COLD_TO_FROZEN_IDLE_HOURS = 720  # 30d idle -> eligible for frozen
 
 # --- Compression levels (zstd) ---
 WARM_COMPRESSION_LEVEL = 3   # balanced: ~3.2x ratio, fast
-COLD_COMPRESSION_LEVEL = 9   # max practical: ~3.5x ratio, slow compress
+COLD_COMPRESSION_LEVEL = 9   # high ratio: ~3.5x, slow compress
+FROZEN_COMPRESSION_LEVEL = 19 # maximum: ~3.8x, very slow compress, archival
 
 # --- Valid zstd compression level range ---
 ZSTD_MIN_LEVEL = 1
@@ -127,10 +130,13 @@ class TierPolicy:
     """Defines when and how artifacts move between tiers."""
     hot_to_warm_age_hours: int = DEFAULT_HOT_TO_WARM_AGE_HOURS
     warm_to_cold_age_hours: int = DEFAULT_WARM_TO_COLD_AGE_HOURS
+    cold_to_frozen_age_hours: int = DEFAULT_COLD_TO_FROZEN_AGE_HOURS
     hot_to_warm_idle_hours: int = DEFAULT_HOT_TO_WARM_IDLE_HOURS
     warm_to_cold_idle_hours: int = DEFAULT_WARM_TO_COLD_IDLE_HOURS
+    cold_to_frozen_idle_hours: int = DEFAULT_COLD_TO_FROZEN_IDLE_HOURS
     warm_compression_level: int = WARM_COMPRESSION_LEVEL
     cold_compression_level: int = COLD_COMPRESSION_LEVEL
+    frozen_compression_level: int = FROZEN_COMPRESSION_LEVEL
     # Minimum file size (bytes) to bother compressing
     min_file_size_bytes: int = 512
     # Keep original after compression (for safety during first run)
@@ -158,6 +164,16 @@ class TierPolicy:
             raise ConfigValidationError(
                 f"cold_compression_level must be {ZSTD_MIN_LEVEL}-{ZSTD_MAX_LEVEL}, "
                 f"got {self.cold_compression_level}")
+        if not (ZSTD_MIN_LEVEL <= self.frozen_compression_level <= ZSTD_MAX_LEVEL):
+            raise ConfigValidationError(
+                f"frozen_compression_level must be {ZSTD_MIN_LEVEL}-{ZSTD_MAX_LEVEL}, "
+                f"got {self.frozen_compression_level}")
+        if self.cold_to_frozen_age_hours < 0:
+            raise ConfigValidationError(
+                f"cold_to_frozen_age_hours must be >= 0, got {self.cold_to_frozen_age_hours}")
+        if self.cold_to_frozen_idle_hours < 0:
+            raise ConfigValidationError(
+                f"cold_to_frozen_idle_hours must be >= 0, got {self.cold_to_frozen_idle_hours}")
         if self.min_file_size_bytes < 0:
             raise ConfigValidationError(
                 f"min_file_size_bytes must be >= 0, got {self.min_file_size_bytes}")
@@ -254,8 +270,11 @@ class EngineConfig:
 
         known_policy_fields = {
             "hot_to_warm_age_hours", "warm_to_cold_age_hours",
+            "cold_to_frozen_age_hours",
             "hot_to_warm_idle_hours", "warm_to_cold_idle_hours",
+            "cold_to_frozen_idle_hours",
             "warm_compression_level", "cold_compression_level",
+            "frozen_compression_level",
             "min_file_size_bytes", "keep_originals",
         }
         policy_data = {k: v for k, v in data.get("tier_policy", {}).items()
