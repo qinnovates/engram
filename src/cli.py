@@ -135,7 +135,9 @@ def cmd_context(args: argparse.Namespace) -> None:
     engine.register_all(discovered)
 
     query = getattr(args, "query", "") or ""
-    budget = getattr(args, "budget", 128000) or 128000
+    budget = getattr(args, "budget", None)
+    if budget is None or budget < 0:
+        budget = 128000
 
     context = engine.get_context(query=query, budget_chars=budget)
     print(context)

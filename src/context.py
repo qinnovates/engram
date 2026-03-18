@@ -245,17 +245,23 @@ class SemanticIndex:
         if not query_terms:
             return []
 
-        scored: list[ArtifactSummary] = []
+        scored: list[tuple[float, ArtifactSummary]] = []
 
         for entry in self._entries.values():
             score = self._compute_relevance(query_terms, entry)
             if score > 0:
-                entry.relevance_score = score
-                scored.append(entry)
+                # Don't mutate shared state — store score in tuple
+                scored.append((score, entry))
 
         # Sort by relevance (descending), then by recency (descending)
-        scored.sort(key=lambda e: (e.relevance_score, -e.idle_days), reverse=True)
-        return scored[:max_results]
+        scored.sort(key=lambda pair: (pair[0], -pair[1].idle_days), reverse=True)
+
+        # Set scores on returned copies only
+        results = []
+        for score, entry in scored[:max_results]:
+            entry.relevance_score = score
+            results.append(entry)
+        return results
 
     def get(self, path: Path) -> Optional[ArtifactSummary]:
         return self._entries.get(str(path.resolve()))

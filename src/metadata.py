@@ -77,12 +77,14 @@ class MetadataStore:
                 with open(self.db_path) as f:
                     data = json.load(f)
                 for key, val in data.get("artifacts", {}).items():
-                    # Filter to known fields only — prevents crash on unknown keys
-                    # and avoids silent state wipe from TypeError
                     filtered = {k: v for k, v in val.items()
                                 if k in self._KNOWN_FIELDS}
                     self._artifacts[key] = ArtifactMeta(**filtered)
             except json.JSONDecodeError:
+                # Registry is corrupt — save a backup before resetting
+                import shutil
+                backup = self.db_path.with_suffix(".corrupt.bak")
+                shutil.copy2(self.db_path, backup)
                 self._artifacts = {}
 
     def save(self, force: bool = False) -> None:
@@ -227,7 +229,8 @@ class MetadataStore:
             "total_compressed_bytes": total_compressed,
             "total_hot_bytes": total_hot_bytes,
             "overall_ratio": round(total_original / total_compressed, 2) if total_compressed > 0 else 1.0,
-            "space_saved_bytes": total_original - total_compressed - total_hot_bytes if total_compressed > 0 else 0,
+            # Space saved = sum of (original - compressed) for each compressed artifact
+            "space_saved_bytes": (total_original - total_hot_bytes) - total_compressed if total_compressed > 0 else 0,
         }
 
 

@@ -18,13 +18,16 @@ Access-based promotion (cold -> hot on read):
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
+
+import zstandard as zstd
 from typing import Optional
 
 from .config import EngineConfig, COMPRESSED_EXT
 from .metadata import MetadataStore, Tier, ArtifactMeta, compute_sha256
 from .compressor import compress_file, decompress_file, recompress_file
-from .encryption import encrypt_file, decrypt_file, ENCRYPTED_EXT
+from .encryption import encrypt_file, decrypt_file, ENCRYPTED_EXT, EncryptionError
 from .context import SemanticIndex, ContextBuilder, ContextBudget, DEFAULT_CONTEXT_BUDGET_CHARS
 
 
@@ -136,7 +139,6 @@ class TieringEngine:
         meta_dir = config.resolve_metadata_dir()
         self.metadata = MetadataStore(meta_dir)
         self.index = SemanticIndex(meta_dir)
-        self.actions: list[TierAction] = []
 
         # Audit logging — disabled by default, opt-in via config
         self._audit = None
@@ -223,7 +225,7 @@ class TieringEngine:
         Returns list of actions taken (or would-be-taken in dry_run mode).
         """
         policy = self.config.tier_policy
-        self.actions = []
+        actions: list[TierAction] = []
 
         # Phase 1: HOT -> WARM
         warm_candidates = self.metadata.candidates_for_warm(
@@ -235,7 +237,7 @@ class TieringEngine:
         for meta in warm_candidates:
             action = self._tier_to_warm(meta)
             if action:
-                self.actions.append(action)
+                actions.append(action)
 
         # Phase 2: WARM -> COLD
         cold_candidates = self.metadata.candidates_for_cold(
@@ -246,11 +248,11 @@ class TieringEngine:
         for meta in cold_candidates:
             action = self._tier_to_cold(meta)
             if action:
-                self.actions.append(action)
+                actions.append(action)
 
         self.metadata.save()
         self.index.save()
-        return self.actions
+        return actions
 
     def _tier_to_warm(self, meta: ArtifactMeta) -> Optional[TierAction]:
         """Compress a hot artifact to warm tier (zstd level 3)."""
@@ -296,7 +298,7 @@ class TieringEngine:
                 compressed_path.unlink()
                 compressed_path = encrypted_path
                 encrypted = True
-            except Exception:
+            except (OSError, subprocess.SubprocessError, EncryptionError):
                 # Clean up partial encryption output
                 enc_candidate = compressed_path.with_suffix(compressed_path.suffix + ".age")
                 if enc_candidate.exists():
@@ -352,7 +354,7 @@ class TieringEngine:
                 working_path,
                 new_level=self.config.tier_policy.cold_compression_level,
             )
-        except Exception:
+        except (OSError, zstd.ZstdError):
             # Clean up decrypted intermediate if it exists
             if working_path != compressed and working_path.exists():
                 working_path.unlink()
@@ -368,7 +370,7 @@ class TieringEngine:
                 final_path.unlink()
                 final_path = encrypted_path
                 encrypted = True
-            except Exception:
+            except (OSError, subprocess.SubprocessError, EncryptionError):
                 enc_candidate = final_path.with_suffix(final_path.suffix + ".age")
                 if enc_candidate.exists():
                     enc_candidate.unlink()
@@ -422,7 +424,12 @@ class TieringEngine:
             )
 
         if meta.tier == Tier.HOT.value:
-            return original_path if original_path.exists() else None
+            if original_path.exists():
+                return original_path
+            raise ArtifactNotFoundError(
+                f"Hot artifact file missing from disk: {original_path}",
+                tier="hot", path=str(original_path),
+            )
 
         # Validate compressed_path from registry
         if not meta.compressed_path:
