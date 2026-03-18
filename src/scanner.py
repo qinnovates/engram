@@ -189,11 +189,17 @@ def iter_artifacts(targets: list[ScanTarget]) -> Iterator[Path]:
         if not base.exists():
             continue
 
+        base_resolved = base.resolve()
         pattern = f"**/{target.pattern}" if target.recursive else target.pattern
 
         for match in base.glob(pattern):
             # Skip symlinks (prevents cross-directory reads)
             if match.is_symlink():
+                continue
+            # Containment check — file must stay within scan root
+            try:
+                match.resolve().relative_to(base_resolved)
+            except ValueError:
                 continue
             if match.is_file() and match.suffix not in skip_suffixes:
                 yield match

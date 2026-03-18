@@ -474,7 +474,7 @@ class ContextBuilder:
 
             if relevant:
                 # Sanitize query before embedding in context output
-                safe_query = re.sub(r'[\n\r#*`\[\]]', '', query[:50]).strip()
+                safe_query = re.sub(r'[\n\r#*`\[\]<>]', '', query[:50]).strip()
                 rel_header = f"\n### Relevant to: \"{safe_query}\"\n"
                 self.budget.consume(rel_header)
                 sections.append(rel_header)

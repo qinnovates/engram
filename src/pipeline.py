@@ -46,6 +46,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -206,7 +207,7 @@ def _is_boilerplate(text: bytes) -> bool:
 
 def _store_boilerplate(text: bytes, store: Path) -> str:
     """Store a boilerplate block and return its hash reference."""
-    h = hashlib.sha256(text).hexdigest()[:16]
+    h = hashlib.sha256(text).hexdigest()[:32]  # 128-bit, collision-safe
     ref_path = store / f"{h}.boilerplate"
     if not ref_path.exists():
         fd = os.open(str(ref_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
@@ -232,6 +233,10 @@ def restore_boilerplate(content: bytes, boilerplate_store: Path) -> bytes:
                 text = obj["content"]
                 if isinstance(text, str) and text.startswith("BOILERPLATE_REF:"):
                     ref = text.split(":", 1)[1]
+                    # Validate ref is hex-only (prevents path traversal)
+                    if not re.fullmatch(r'[0-9a-f]{16,64}', ref):  # hex-only guard
+                        output_lines.append(line)
+                        continue
                     ref_path = boilerplate_store / f"{ref}.boilerplate"
                     if ref_path.exists():
                         obj["content"] = ref_path.read_text()

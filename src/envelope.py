@@ -311,13 +311,29 @@ def decrypt_dek_with_privkey(encrypted_dek: bytes, private_key: str) -> bytes:
             stderr=subprocess.PIPE,
         )
 
-        # Write private key to the FIFO (this unblocks age)
-        # Must happen in a thread or after Popen since FIFO blocks on open
-        with open(fifo_path, "wb") as fifo:
-            fifo.write(key_bytes)
+        # Write private key to FIFO in a separate thread to avoid deadlock.
+        # FIFOs block on open() until both reader and writer are connected.
+        # age opens the read end; we must open the write end concurrently.
+        import threading
+
+        write_error: list[Exception] = []
+
+        def _write_fifo() -> None:
+            try:
+                with open(fifo_path, "wb") as fifo:
+                    fifo.write(key_bytes)
+            except Exception as e:
+                write_error.append(e)
+
+        writer = threading.Thread(target=_write_fifo, daemon=True)
+        writer.start()
 
         # Send encrypted DEK via stdin, collect decrypted output
-        stdout, stderr = proc.communicate(input=encrypted_dek, timeout=30)
+        stdout, _stderr = proc.communicate(input=encrypted_dek, timeout=30)
+
+        writer.join(timeout=5)
+        if write_error:
+            raise EncryptionError(f"Failed to write key to FIFO: {write_error[0]}")
 
         if proc.returncode != 0:
             raise EncryptionError(
@@ -647,7 +663,13 @@ class EnvelopeEncryptor:
         # Store private key in Keychain immediately
         source = cls.store_private_key_in_keychain(privkey, tier, service)
 
-        # Zero the private key from memory (best effort in Python)
-        privkey = "\x00" * len(privkey)  # noqa: F841
+        # Zero the private key from memory.
+        # Python strings are immutable — this overwrites the bytearray copy,
+        # but the original str from age-keygen may persist until GC.
+        # This is a known Python limitation, not a fixable bug.
+        key_buf = bytearray(privkey.encode("utf-8"))
+        for i in range(len(key_buf)):
+            key_buf[i] = 0
+        del privkey, key_buf
 
         return pubkey, source

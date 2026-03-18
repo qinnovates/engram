@@ -264,10 +264,20 @@ def _configure_thresholds() -> TierPolicy:
     print()
     print("Configure tier thresholds (press Enter for default):")
 
-    def _get_int(prompt: str, default: int) -> int:
+    def _get_int(prompt: str, default: int, max_val: int = 87600) -> int:
+        """Get integer input with bounds (max default: 87600 hours = 10 years)."""
         try:
             val = input(f"  {prompt} [{default}]: ").strip()
-            return int(val) if val else default
+            if not val:
+                return default
+            parsed = int(val)
+            if parsed < 0:
+                print(f"    Must be >= 0. Using default: {default}")
+                return default
+            if parsed > max_val:
+                print(f"    Max is {max_val}. Using default: {default}")
+                return default
+            return parsed
         except (ValueError, EOFError, KeyboardInterrupt):
             return default
 
