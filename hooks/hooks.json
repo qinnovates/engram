@@ -1,0 +1,30 @@
+{
+  "description": "Tiered memory engine hooks for automatic memory management",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -m src.cli context --query '' --budget 32000 2>/dev/null || true",
+            "timeout": 10,
+            "statusMessage": "Loading memory context...",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -m src.cli run --dry-run 2>/dev/null || true",
+            "timeout": 15,
+            "statusMessage": "Checking memory tiers..."
+          }
+        ]
+      }
+    ]
+  }
+}

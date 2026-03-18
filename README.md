@@ -212,8 +212,16 @@ Post-quantum encryption protects the algorithm. Key management protects the key.
 
 ## Quick start
 
+### Install as a Claude Code plugin
+
 ```bash
-# Install
+# From the marketplace (when published)
+claude plugin install tiered-memory-engine
+
+# Or from GitHub directly
+claude --plugin-dir /path/to/tiered-memory-engine
+
+# Or install the Python package standalone
 pip install -e .
 
 # Initialize config (auto-detects Claude, ChatGPT, Cursor, Copilot artifacts)
@@ -258,6 +266,119 @@ print(f'  warm source: {src}')
 # It never existed as a file on disk.
 ```
 
+## Example use cases
+
+### 1. Solo developer with long-running projects
+
+You've been building a project for 6 months. You have 400+ conversation logs, memory files, and task artifacts from Claude Code sessions. Your context window loads the most recent files but has no memory of decisions you made 3 months ago.
+
+```bash
+# Initial setup — takes 30 seconds
+tiered-memory init
+tiered-memory run
+
+# Now at session start, ask your AI for relevant context
+tiered-memory context --query "authentication refactor we discussed in January"
+
+# Output: summaries of 3 matching sessions from cold tier,
+# plus 2 related memory files from warm tier.
+# Total cost: ~200 tokens instead of ~8,000 for raw files.
+```
+
+**Result:** 400 artifacts compressed to ~30% of original disk space. Your AI surfaces relevant 3-month-old decisions in ~200 tokens instead of losing them entirely.
+
+### 2. Security researcher with sensitive session data
+
+You're doing vulnerability research. Your AI sessions contain exploit details, CVE analysis, and private disclosure timelines. This data must not leak.
+
+```bash
+# Set up per-tier encryption with Touch ID
+python3 -c "
+from src.envelope import EnvelopeEncryptor
+for tier in ['warm', 'cold']:
+    pub, src = EnvelopeEncryptor.setup_tier_with_keychain(tier)
+    print(f'{tier} pubkey: {pub}')
+    print(f'{tier} source: {src}')
+"
+
+# Enable encryption in config, then run
+tiered-memory run
+
+# Every compressed artifact now has:
+# - Its own unique 256-bit encryption key
+# - DEK encrypted with ML-KEM-768 (post-quantum)
+# - Private key locked in Secure Enclave (Touch ID required)
+```
+
+**Result:** Even if your laptop is stolen, cold/frozen session data is encrypted with PQ crypto. The attacker needs your fingerprint AND the machine's Secure Enclave. Key rotation takes seconds (re-wraps headers, not data).
+
+### 3. Team sharing an AI assistant on a server
+
+Your team runs Claude Code on a shared dev server. Each person's sessions pile up in `~/.claude/subagents/`. After a month, there are 2,000+ JSONL files consuming 500 MB.
+
+```bash
+# Automate with cron — tier every 6 hours
+crontab -e
+# Add: 0 */6 * * * cd /path/to/project && tiered-memory run
+
+# Anyone on the team can search all past sessions
+tiered-memory search "database migration strategy"
+# Returns: relevant sessions from any team member, ranked by relevance
+```
+
+**Result:** 500 MB drops to ~150 MB. Old sessions are searchable via the semantic index without decompressing. The cron job runs unattended.
+
+### 4. AI assistant with multi-project memory
+
+You use Claude Code across 5 projects. Each project has its own memory directory. You want a single search across all of them.
+
+```bash
+# Add all project memory dirs to config.json scan_targets
+tiered-memory init  # starts with Claude defaults
+
+# Edit ~/.tiered-memory/config.json to add custom paths:
+# "scan_targets": [
+#   {"path": "~/projects/webapp/.claude/memory", "pattern": "**/*"},
+#   {"path": "~/projects/api/.claude/memory", "pattern": "**/*"},
+#   {"path": "~/projects/mobile/.claude/memory", "pattern": "**/*"}
+# ]
+
+# Search across all projects
+tiered-memory search "rate limiting implementation"
+tiered-memory context --query "how did we handle auth across projects"
+```
+
+**Result:** Cross-project memory search. Your AI can recall that you solved rate limiting in the API project and apply the same pattern to the webapp — without you remembering which project it was in.
+
+### 5. Long-term knowledge preservation
+
+You've been coding with AI for 2 years. Early sessions contain foundational decisions you've forgotten. Without tiering, these files sit uncompressed and unsearchable. With tiering:
+
+```bash
+tiered-memory status
+# Tiered Memory Status
+# ========================================
+# Total artifacts:   2,847
+#   Hot:             42      (this week's sessions)
+#   Warm:            186     (past 2 weeks)
+#   Cold:            1,203   (past 3 months)
+#   Frozen:          1,416   (older than 3 months)
+# Total original:    847,293,102 bytes (808 MB)
+# Total compressed:  241,226,600 bytes (230 MB)
+# Overall ratio:     3.51x
+# Space saved:       606 MB
+# Indexed artifacts: 2,847
+# Total keywords:    18,429
+
+# Recall a specific frozen artifact about early architecture decisions
+tiered-memory recall ~/.claude/subagents/session-2024-05-12.jsonl
+# Takes ~3 seconds (frozen tier), but the full session is back in hot tier
+```
+
+**Result:** 2 years of AI memory in 230 MB instead of 808 MB. Every session searchable by keyword. Frozen artifacts take a few seconds to recall — like remembering something from years ago.
+
+---
+
 ## Supported AI assistants
 
 | Assistant | Auto-detected Artifacts |
@@ -267,6 +388,42 @@ print(f'  warm source: {src}')
 | Cursor | Conversation logs |
 | GitHub Copilot | Configuration cache |
 | Custom | Add any path to `config.json` |
+
+## Plugin architecture
+
+This project follows the official Anthropic Claude Code plugin specification:
+
+```
+tiered-memory-engine/
+├── .claude-plugin/
+│   └── plugin.json              # Plugin manifest (name, version, author)
+├── marketplace.json             # Marketplace distribution metadata
+├── skills/
+│   └── tiered-memory/
+│       └── SKILL.md             # Skill definition with frontmatter
+├── hooks/
+│   └── hooks.json               # SessionStart + PreCompact hooks
+├── src/                         # Core Python engine
+│   ├── engine.py                # Orchestrator
+│   ├── context.py               # Context window enhancement
+│   ├── compressor.py            # zstd tiered compression
+│   ├── envelope.py              # Asymmetric PQ envelope encryption
+│   ├── encryption.py            # age CLI integration
+│   ├── config.py                # Config with validation
+│   ├── metadata.py              # Artifact tracking + integrity
+│   ├── scanner.py               # AI assistant auto-detection
+│   └── cli.py                   # CLI interface
+├── tests/                       # 47 passing, 6 integration (need age)
+├── docs/
+│   └── KEY-STORAGE-GUIDE.md     # Vault options ranked by security
+├── README.md
+├── LICENSE
+└── pyproject.toml
+```
+
+**Hooks:** On `SessionStart`, the plugin auto-loads relevant memory context. On `PreCompact`, it checks if any artifacts should be tiered down.
+
+**Skill:** Invocable as `/tiered-memory` in Claude Code. Auto-triggers on keywords like "compress memories", "search past sessions", "encrypt AI data".
 
 ## Architecture
 

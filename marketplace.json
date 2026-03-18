@@ -1,0 +1,33 @@
+{
+  "name": "tiered-memory-engine",
+  "owner": {
+    "name": "Kevin Qi",
+    "url": "https://github.com/qinnovates"
+  },
+  "metadata": {
+    "description": "Brain-inspired tiered memory compression that extends AI context windows 3-4x with optional post-quantum encryption. Automatic hot/warm/cold/frozen storage tiers, semantic indexing for instant search, progressive recall, and per-artifact envelope encryption using ML-KEM-768 (NIST FIPS 203).",
+    "version": "0.1.0",
+    "repository": "https://github.com/qinnovates/tiered-memory-engine",
+    "license": "MIT",
+    "categories": [
+      "memory",
+      "security",
+      "productivity",
+      "developer-tools"
+    ],
+    "compatibility": {
+      "python": ">=3.10",
+      "platforms": ["darwin", "linux"],
+      "optional_dependencies": {
+        "age": ">=1.3.0 (for post-quantum encryption)"
+      }
+    }
+  },
+  "plugins": [
+    {
+      "name": "tiered-memory-engine",
+      "description": "Tiered memory compression with context enhancement and PQ encryption",
+      "source": "./"
+    }
+  ]
+}
