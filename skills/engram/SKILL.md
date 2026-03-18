@@ -3,77 +3,163 @@ name: engram
 description: Manage AI memory artifacts with tiered compression (hot/warm/cold/frozen), semantic search, progressive recall, and optional post-quantum encryption. Use when the user mentions memory management, context optimization, compressing old sessions, searching past conversations, recalling archived memories, encrypting AI data, or managing artifact storage.
 allowed-tools: Read, Bash(engram *), Bash(python3 -m src.cli *), Grep, Glob
 user-invocable: true
-argument-hint: "[command] [options]"
+argument-hint: "[command or example name]"
 ---
 
 # Engram
 
 You are managing an AI memory tiering system. When invoked, help the user with memory compression, search, recall, encryption, and context optimization.
 
-## Available Commands
+## Examples
 
-Run commands via the CLI:
+When the user runs `/engram examples`, show this list and ask which they'd like to do:
 
+### 1. First-time setup
 ```bash
-# Initialize config (auto-detects Claude, ChatGPT, Cursor, Copilot artifacts)
+# Auto-detect AI assistants, choose tiers, configure thresholds
 engram init
 
-# Scan for artifacts across all configured AI assistant locations
+# See what's on your system before changing anything
 engram scan
-
-# Preview tier transitions (safe, no changes)
 engram run --dry-run
+```
+**What it does:** Discovers all AI session files (Claude, ChatGPT, Cursor, etc.), shows how many artifacts you have, how much disk they use, and what would move to each tier. No files are modified.
 
-# Execute tiering (compress idle artifacts)
+### 2. Compress old sessions
+```bash
+# Move idle artifacts to warm/cold/frozen tiers
 engram run
 
-# Show tier distribution and compression stats
+# Check the results
 engram status
+```
+**What it does:** Files older than 48h get minified + compressed (warm, 4-5x). Files older than 14d get boilerplate-stripped + dictionary-compressed (cold, 8-12x). Files older than 90d get converted to columnar Parquet (frozen, 20-50x). Recent files stay untouched.
 
-# Get context-optimized memory block for AI session injection
-engram context --query "$ARGUMENTS"
+### 3. Search past conversations
+```bash
+# Find something across all tiers without decompressing
+engram search "authentication refactor"
+engram search "that bug we fixed in January"
+engram search "TARA threat model"
+```
+**What it does:** Searches the semantic index (132K+ keywords). Returns matching artifacts with tier, age, summary, and relevance score. No decompression needed — the index is always in memory.
 
-# Search indexed memories across all tiers without decompressing
-engram search "$ARGUMENTS"
+### 4. Load context for this session
+```bash
+# Get a token-budget-optimized memory block
+engram context --query "auth patterns we discussed"
+engram context --query "security architecture decisions"
+```
+**What it does:** Builds a context block from your most relevant memories. Hot summaries load first, then query-relevant warm/cold/frozen matches. Fits within your token budget. Output is plain text you can paste into any AI prompt.
 
-# Recall a compressed artifact back to hot tier
-engram recall <file-path>
+### 5. Recall a frozen artifact
+```bash
+# Bring a deep-archived session back to hot tier
+engram recall ~/.claude/projects/.../session-2025-06-15.jsonl
+```
+**What it does:** Decompresses (and decrypts if encrypted) a cold/frozen artifact back to hot tier. Cold takes ~500ms. Frozen takes ~5 seconds. The file is fully accessible again. Run `engram run` later to re-tier it when idle.
 
-# Set up post-quantum encryption with Touch ID
+### 6. Enable post-quantum encryption
+```bash
+# Install age (PQ encryption tool)
+brew install age
+
+# Build the crypto sidecar (handles keys — Python never sees them)
+cd engram/sidecar && cargo build --release
+
+# Generate per-tier keypairs stored in Keychain (Touch ID)
 engram encrypt-setup
 ```
+**What it does:** Sets up ML-KEM-768 hybrid encryption via a Rust sidecar. Private keys go directly to macOS Keychain — they never exist as files, never enter Python, never appear in terminal output. Every tier gets its own keypair. Every artifact gets its own unique encryption key.
 
-## When to Use This Skill
+### 7. Set up 2-tier mode (simple)
+```bash
+# During init, choose 2-tier mode
+engram init
+# When prompted: "How many storage tiers?" → choose 2
+```
+**What it does:** Simplified mode with just Hot (recent) and Cold (old, compressed). Fewer moving parts. Good for most users who want compression without complexity.
 
-- **User says "compress old memories"** → run `engram run`
-- **User says "search memories for X"** → run `engram search "X"`
-- **User says "what do I have stored?"** → run `engram status`
-- **User says "load context about X"** → run `engram context --query "X"`
-- **User says "recall that old session"** → run `engram recall <path>`
-- **User says "encrypt my memories"** → run `engram encrypt-setup`
-- **User says "how much space am I using?"** → run `engram status`
+### 8. Set up 4-tier mode (maximum compression)
+```bash
+# During init, choose 4-tier mode
+engram init
+# When prompted: "How many storage tiers?" → choose 4
+```
+**What it does:** Full pipeline — Hot / Warm (4-5x) / Cold (8-12x) / Frozen (20-50x). Each tier applies different compression strategies. Best disk savings. Recommended for heavy AI users.
 
-## How Tiering Works
+### 9. Customize tier thresholds
+```bash
+# Edit the config directly
+cat ~/.engram/config.json
+```
+**Example thresholds:**
+```json
+{
+  "tier_policy": {
+    "hot_to_warm_age_hours": 24,
+    "hot_to_warm_idle_hours": 12,
+    "warm_to_cold_age_hours": 168,
+    "warm_to_cold_idle_hours": 72,
+    "cold_to_frozen_age_hours": 720,
+    "cold_to_frozen_idle_hours": 336
+  }
+}
+```
+**What it does:** Moves artifacts faster (24h instead of 48h to warm) or slower. Set any threshold to match your workflow. Aggressive for disk savings, conservative for fast access.
 
-Artifacts move through tiers based on age and idle time:
+### 10. Enable most secure mode (encrypt everything including hot)
+```bash
+# During init, enable encryption, then choose "most secure"
+engram init
+# Enable PQ encryption? → yes
+# Enable most secure mode (encrypt all tiers including hot)? → yes
+```
+**What it does:** Encrypts every file at rest, including active session files in hot tier. Requires Touch ID on every file read. Maximum security — no plaintext on disk at any tier. Slower reads but nothing is ever unprotected.
 
-| Tier | When | Compression | Retrieval |
-|------|------|-------------|-----------|
-| Hot | Active files | None | Instant |
-| Warm | 48h old + 24h idle | zstd-3 (~3.2x) | ~10ms |
-| Cold | 14d old + 7d idle | zstd-9 (~3.5x) | ~50-500ms |
-| Frozen | 90d old + 30d idle | zstd-19 (~3.8x) | 1-10 seconds |
+### 11. Check what you're wasting
+```bash
+engram status
+```
+```
+Total artifacts:   4,564
+  Hot:             4,237
+  Warm:            41
+  Cold:            286
+  Frozen:          0
+Total original:    2.6 GB
+Total compressed:  222 MB
+Overall ratio:     11.62x
+Space saved:       1.6 GB
+Indexed:           132,081 keywords
+```
 
-The semantic index (always loaded, never compressed) lets you search all tiers without decompressing. Summaries load first, full content only on demand.
+### 12. Verify data integrity
+```bash
+# Check SHA-256 hashes of all tracked artifacts
+engram verify
+```
+**What it does:** Computes the current hash of every tracked artifact and compares against the stored hash. Reports passed, failed, and skipped (no hash stored). Failed = file was modified or corrupted since registration.
 
-## Post-Quantum Encryption
+### 13. Rebuild the search index
+```bash
+# If the index is corrupted or you want a fresh start
+engram reindex
+```
+**What it does:** Deletes the semantic index and re-scans all artifacts. Re-extracts keywords and summaries. Use after moving files, changing scan targets, or recovering from corruption.
 
-When encryption is enabled, each artifact gets a unique 256-bit DEK encrypted with the tier's public key via ML-KEM-768 (NIST FIPS 203). Private keys are retrieved on-demand from macOS Keychain (Touch ID), HashiCorp Vault, Cloud KMS, or environment variables. Private key files on disk are deliberately blocked.
+## Available Commands
 
-## Context Enhancement
-
-The `context` command builds a budget-aware memory block:
-1. Hot-tier summaries always included
-2. Query-relevant warm/cold/frozen matches surfaced by relevance score
-3. Token budget tracked (~4 chars/token) to prevent context overflow
-4. Output is plain text any AI assistant can consume
+| Command | What |
+|---------|------|
+| `engram init` | Guided setup (2-tier or 4-tier, encryption choice) |
+| `engram scan` | Discover artifacts |
+| `engram run` | Execute tier transitions |
+| `engram run --dry-run` | Preview without changes |
+| `engram status` | Tier distribution and stats |
+| `engram search <query>` | Search all tiers |
+| `engram context --query <q>` | Budget-optimized context block |
+| `engram recall <path>` | Decompress to hot |
+| `engram reindex` | Rebuild semantic index |
+| `engram verify` | SHA-256 integrity check |
+| `engram encrypt-setup` | Configure encryption |
