@@ -111,12 +111,13 @@ class IndexCrypto:
         # Set permissions on the bundle before encrypting
         os.chmod(str(self.bundle_path), 0o600)
 
-        # Encrypt the bundle via sidecar
+        # Encrypt the bundle via sidecar, guaranteed cleanup
         vault = self._get_vault()
-        vault.encrypt(self.bundle_path, self.encrypted_path, INDEX_TIER)
-
-        # Delete plaintext: bundle + all index files
-        self.bundle_path.unlink(missing_ok=True)
+        try:
+            vault.encrypt(self.bundle_path, self.encrypted_path, INDEX_TIER)
+        finally:
+            # Always delete plaintext bundle — even if encryption fails
+            self.bundle_path.unlink(missing_ok=True)
         for path, _ in existing_files:
             path.unlink(missing_ok=True)
 
@@ -148,15 +149,24 @@ class IndexCrypto:
         vault = self._get_vault()
         vault.decrypt(self.encrypted_path, self.bundle_path, INDEX_TIER)
 
-        # Extract tarball
-        with tarfile.open(str(self.bundle_path), "r") as tar:
-            # Security: validate member paths before extracting
-            for member in tar.getmembers():
-                if member.name.startswith("/") or ".." in member.name:
-                    raise ValueError(
-                        f"Unsafe path in index bundle: {member.name}"
-                    )
-            tar.extractall(str(self.engram_dir))
+        # Extract tarball with security validation
+        try:
+            with tarfile.open(str(self.bundle_path), "r") as tar:
+                for member in tar.getmembers():
+                    # Reject path traversal, absolute paths, symlinks, hardlinks
+                    if member.name.startswith("/") or ".." in member.name:
+                        raise ValueError(f"Unsafe path in index bundle: {member.name}")
+                    if member.issym() or member.islnk():
+                        if member.linkname.startswith("/") or ".." in member.linkname:
+                            raise ValueError(f"Unsafe link in index bundle: {member.linkname}")
+                import sys
+                if sys.version_info >= (3, 12):
+                    tar.extractall(str(self.engram_dir), filter="data")
+                else:
+                    tar.extractall(str(self.engram_dir))
+        finally:
+            # Always clean up plaintext bundle
+            self.bundle_path.unlink(missing_ok=True)
 
         # Set permissions on extracted files
         for name in INDEX_FILES:
@@ -174,12 +184,19 @@ class IndexCrypto:
             vault.decrypt(bp_enc, bp_tar, INDEX_TIER)
             boilerplate_dir = self.engram_dir / "boilerplate"
             boilerplate_dir.mkdir(exist_ok=True)
-            with tarfile.open(str(bp_tar), "r") as tar:
-                for member in tar.getmembers():
-                    if member.name.startswith("/") or ".." in member.name:
-                        raise ValueError(
-                            f"Unsafe path in boilerplate bundle: {member.name}"
-                        )
-                tar.extractall(str(boilerplate_dir))
-            bp_tar.unlink(missing_ok=True)
+            try:
+                with tarfile.open(str(bp_tar), "r") as tar:
+                    for member in tar.getmembers():
+                        if member.name.startswith("/") or ".." in member.name:
+                            raise ValueError(f"Unsafe path in boilerplate: {member.name}")
+                        if member.issym() or member.islnk():
+                            if member.linkname.startswith("/") or ".." in member.linkname:
+                                raise ValueError(f"Unsafe link in boilerplate: {member.linkname}")
+                    import sys
+                    if sys.version_info >= (3, 12):
+                        tar.extractall(str(boilerplate_dir), filter="data")
+                    else:
+                        tar.extractall(str(boilerplate_dir))
+            finally:
+                bp_tar.unlink(missing_ok=True)
             os.chmod(str(boilerplate_dir), 0o700)

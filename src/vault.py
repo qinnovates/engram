@@ -29,25 +29,36 @@ _VAULT_BINARY_NAME = "engram-vault"
 
 
 def _find_vault_binary() -> str:
-    """Find the engram-vault binary on PATH or in the sidecar directory."""
+    """Find and verify the engram-vault binary."""
+    candidates = []
+
     # Check PATH first
     found = shutil.which(_VAULT_BINARY_NAME)
     if found:
-        return found
+        candidates.append(found)
 
     # Check adjacent to this package (development layout)
     pkg_dir = Path(__file__).parent.parent
     dev_path = pkg_dir / "sidecar" / "target" / "release" / _VAULT_BINARY_NAME
     if dev_path.exists():
-        return str(dev_path)
+        candidates.append(str(dev_path))
+
+    for binary in candidates:
+        # Security: verify the binary is not world-writable (CWE-426)
+        try:
+            stat = os.stat(binary)
+            if stat.st_mode & 0o022:  # group- or world-writable
+                continue  # Skip — could be tampered
+            return binary
+        except OSError:
+            continue
 
     raise EncryptionError(
-        f"{_VAULT_BINARY_NAME} not found. Install it:\n"
+        f"{_VAULT_BINARY_NAME} not found or insecure. Install it:\n"
         f"  cd sidecar && cargo build --release\n"
         f"  cp target/release/{_VAULT_BINARY_NAME} /usr/local/bin/\n"
         f"\n"
-        f"The sidecar handles all key operations so private keys\n"
-        f"never enter Python's address space."
+        f"The binary must not be group- or world-writable."
     )
 
 
@@ -71,7 +82,7 @@ class VaultClient:
             [self._binary],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,  # Discard stderr to prevent pipe deadlock
             text=True,
         )
 
@@ -105,6 +116,12 @@ class VaultClient:
             )
         if not value:
             raise EncryptionError(f"Empty {name}")
+        # Spaces in paths break the space-delimited protocol
+        if name in ("input_path", "output_path") and " " in value:
+            raise EncryptionError(
+                f"Invalid {name} — paths with spaces are not supported "
+                f"in the sidecar protocol. Rename or symlink the file."
+            )
 
     def encrypt(self, input_path: Path, output_path: Path, tier: str) -> None:
         """Encrypt a file using the tier's public key.

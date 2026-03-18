@@ -265,7 +265,7 @@ class LSHIndex:
         if path is None:
             path = os.path.join(os.path.expanduser("~"), ".engram", "index", "lsh-tables.npz")
 
-        data = np.load(path, allow_pickle=True)
+        data = np.load(path, allow_pickle=False)  # SECURITY: never allow pickle (CWE-502)
         config = data["config"]
         dim, n_hyperplanes, n_tables, seed = int(config[0]), int(config[1]), int(config[2]), int(config[3])
 

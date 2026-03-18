@@ -56,6 +56,8 @@ def _get_model(model_name: str = "all-MiniLM-L6-v2"):
         return None
     if model_name not in _model_cache:
         from sentence_transformers import SentenceTransformer
+        # Suppress HuggingFace telemetry — honor "zero network calls" promise
+        os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
         _model_cache[model_name] = SentenceTransformer(model_name)
     return _model_cache[model_name]
 
@@ -211,6 +213,7 @@ class EmbeddingIndex:
         if not self._dirty:
             return
         self.index_dir.mkdir(parents=True, exist_ok=True)
+        self.index_dir.chmod(0o700)  # Restrict — embeddings are sensitive metadata
         for tier in self._dirty:
             paths_file = self._tier_paths_file(tier)
             emb_file = self._tier_embeddings_file(tier)
