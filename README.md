@@ -14,7 +14,15 @@ Each tier trades retrieval speed for storage efficiency. That's not a limitation
 
 This isn't a new idea in AI. DeepSeek-V2 ([arXiv:2405.04434](https://arxiv.org/abs/2405.04434)) applied the same principle to attention itself: instead of recalculating full key/value tensors for every token, they precompute and cache compressed latent vectors — reducing KV cache by 93.3% and achieving 5.76x throughput. Same insight: don't recompute what you can store compressed and recall on demand.
 
-Engram applies this to your AI's *memory*. Four compression tiers, a searchable semantic index, and optional post-quantum encryption — so months of context fit in the same token budget that used to hold a few sessions. Save hardware resources at scale while protecting what matters.
+Engram applies this to your AI's *memory*. It solves three problems at once:
+
+**Context persistence.** Your AI's memory doesn't disappear when the context window fills up. Old sessions compress into searchable tiers instead of being dropped. Months of decisions, code reviews, and conversations stay accessible through the semantic index — no re-explaining required.
+
+**Hardware constraints.** Expanding AI memory means expanding disk usage. Without compression, six months of daily sessions consumes gigabytes. Engram's multi-stage pipeline (4-5x warm, 8-12x cold, 20-50x frozen) shrinks that footprint by 90%+ while keeping everything searchable. You don't need more hardware. You need smarter storage.
+
+**Security risks of expanded memory.** More memory means more data at risk. Every session you've ever had — stored in plaintext on disk. Engram adds optional post-quantum encryption (ML-KEM-768 hybrid) so your expanded memory is protected at rest. Per-artifact keys. Per-tier keypairs. Private keys handled by a compiled Rust sidecar that never lets them enter Python.
+
+No additional setup needed to expand memory. Run `engram init` (auto-detects your AI assistants), then `engram run` (compresses and indexes everything). Your AI immediately has access to months of context through the semantic index. The context window didn't get bigger. The memory behind it got smarter.
 
 ```
 HOT (now)    ████████████████████████████████████████  1,500 KB   1x    instant
