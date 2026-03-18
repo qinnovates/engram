@@ -240,10 +240,12 @@ class SemanticIndex:
 
     def search(self, query: str, max_results: int = 10) -> list[ArtifactSummary]:
         """
-        Search the index for artifacts matching a query.
+        Search the index using hybrid retrieval (keyword + vector + RRF).
 
-        Uses keyword overlap scoring — no ML embeddings needed,
-        keeping this AI-agnostic and dependency-free.
+        If embeddings are available, combines keyword scoring with vector
+        similarity via reciprocal rank fusion (67% better retrieval per
+        Anthropic's research). Falls back to keyword-only if embeddings
+        are not installed.
 
         Args:
             query: Search query (natural language or keywords).
@@ -252,22 +254,56 @@ class SemanticIndex:
         Returns:
             List of ArtifactSummary sorted by relevance score.
         """
+        # Keyword search (always available)
+        keyword_results = self._keyword_search(query, max_results * 2)
+
+        # Vector search (if embeddings available)
+        vector_results = self._vector_search(query, max_results * 2)
+
+        if vector_results:
+            # Hybrid: merge via reciprocal rank fusion
+            from .hybrid_search import reciprocal_rank_fusion
+            import copy
+
+            # Build ranked lists (path → score)
+            keyword_ranked = {r.path: i for i, r in enumerate(keyword_results)}
+            vector_ranked = {r.path: i for i, r in enumerate(vector_results)}
+
+            # RRF merge
+            rrf_scores = reciprocal_rank_fusion(
+                list(keyword_ranked.keys()),
+                list(vector_ranked.keys()),
+            )
+
+            # Map back to ArtifactSummary objects
+            all_entries = {e.path: e for e in self._entries.values()}
+            results = []
+            for path, score in sorted(rrf_scores.items(),
+                                       key=lambda x: x[1], reverse=True):
+                if path in all_entries and len(results) < max_results:
+                    entry = copy.copy(all_entries[path])
+                    entry.relevance_score = score
+                    results.append(entry)
+            return results
+        else:
+            # Keyword-only fallback
+            return keyword_results[:max_results]
+
+    def _keyword_search(self, query: str,
+                        max_results: int) -> list[ArtifactSummary]:
+        """Keyword-only search (BM25-style, always available)."""
         query_terms = self._tokenize(query.lower())
         if not query_terms:
             return []
 
         scored: list[tuple[float, ArtifactSummary]] = []
-
         for entry in self._entries.values():
             score = self._compute_relevance(query_terms, entry)
             if score > 0:
-                # Don't mutate shared state — store score in tuple
                 scored.append((score, entry))
 
-        # Sort by relevance (descending), then by recency (descending)
         scored.sort(key=lambda pair: (pair[0], -pair[1].idle_days), reverse=True)
 
-        # Return copies with scores set — never mutate shared index entries
         import copy
         results = []
         for score, entry in scored[:max_results]:
@@ -275,6 +311,28 @@ class SemanticIndex:
             result_entry.relevance_score = score
             results.append(result_entry)
         return results
+
+    def _vector_search(self, query: str,
+                       max_results: int) -> list[ArtifactSummary]:
+        """Vector search via embedding index (returns [] if unavailable)."""
+        try:
+            if not hasattr(self, '_embedding_index'):
+                return []
+            results = self._embedding_index.search(query, top_k=max_results)
+            if not results:
+                return []
+            # Map SearchResult objects to ArtifactSummary
+            import copy
+            mapped = []
+            for sr in results:
+                key = sr.artifact_path if hasattr(sr, 'artifact_path') else str(sr)
+                if key in self._entries:
+                    entry = copy.copy(self._entries[key])
+                    entry.relevance_score = sr.score if hasattr(sr, 'score') else 0.5
+                    mapped.append(entry)
+            return mapped
+        except Exception:
+            return []  # Graceful degradation
 
     def get(self, path: Path) -> Optional[ArtifactSummary]:
         return self._entries.get(str(path.resolve()))

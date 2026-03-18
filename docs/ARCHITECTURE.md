@@ -150,7 +150,7 @@ Raw JSONL → strip boilerplate → minify
 
 ## Search and Retrieval
 
-Search never decompresses artifacts. It operates on the precomputed index:
+Search never decompresses artifacts. It operates on the precomputed index. When embeddings are available (`pip install engram[embeddings]`), search uses hybrid retrieval (keyword + vector + reciprocal rank fusion). Without embeddings, it falls back to keyword-only.
 
 ```
 Query: "authentication refactor"
