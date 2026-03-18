@@ -12,7 +12,9 @@ You are managing an AI memory tiering system. When invoked, help the user with m
 
 ## Examples
 
-When the user runs `/engram examples`, show this list and ask which they'd like to do:
+When the user runs `/engram usecases` or `/engram examples`, show this list and ask which they'd like to do:
+
+When the user passes arguments like `/engram usecases`, treat "usecases" as the command and show the full examples list below.
 
 ### 1. First-time setup
 ```bash
