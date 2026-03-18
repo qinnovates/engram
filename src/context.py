@@ -132,6 +132,10 @@ class SemanticIndex:
         self._dirty: bool = False
         self._load()
 
+        # Embedding index (optional — gracefully degrades without sentence-transformers)
+        from .embeddings import EmbeddingIndex
+        self._embedding_index = EmbeddingIndex(index_dir / "embeddings")
+
     # Known fields — filter out unknown keys to prevent injection/crash
     _KNOWN_FIELDS = {
         "path", "tier", "summary", "keywords", "line_count", "char_count",
@@ -188,6 +192,9 @@ class SemanticIndex:
         atomic_write_text(self.index_path, json.dumps(payload, indent=2))
         self._dirty = False
 
+        # Persist embedding index alongside the semantic index
+        self._embedding_index.save()
+
     def index_artifact(self, path: Path, content: str, meta: ArtifactMeta) -> ArtifactSummary:
         """
         Index a file's content: extract keywords and generate summary.
@@ -218,6 +225,10 @@ class SemanticIndex:
 
         self._entries[key] = entry
         self._dirty = True
+
+        # Generate embedding for vector search (no-op if sentence-transformers missing)
+        self._embedding_index.add(key, index_content, meta.tier)
+
         return entry
 
     def update_tier(self, path: Path, tier: str) -> None:
