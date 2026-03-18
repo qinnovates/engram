@@ -33,6 +33,13 @@ logger = logging.getLogger(__name__)
 _model_cache: dict[str, object] = {}
 _HAS_SENTENCE_TRANSFORMERS = None  # Lazy check
 
+# Third-party model supply chain verification
+# Model: sentence-transformers/all-MiniLM-L6-v2
+# License: Apache 2.0 | Author: sentence-transformers | Downloads: 207M+
+# SHA-256 of model.safetensors (86.7 MB):
+MODEL_SAFETENSORS_SHA256 = "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db"
+DEFAULT_MODEL = "all-MiniLM-L6-v2"
+
 
 def _check_sentence_transformers() -> bool:
     """Check if sentence-transformers is available (cached)."""
@@ -50,15 +57,58 @@ def _check_sentence_transformers() -> bool:
     return _HAS_SENTENCE_TRANSFORMERS
 
 
-def _get_model(model_name: str = "all-MiniLM-L6-v2"):
+def _verify_model_checksum(model) -> bool:
+    """Verify the model weights match the expected SHA-256 checksum.
+
+    This detects supply chain tampering — if someone replaces the model
+    weights (via a compromised HuggingFace cache, typosquatted package,
+    or modified download), the hash won't match.
+    """
+    import hashlib
+    try:
+        model_dir = Path(model[0].auto_model.config._name_or_path)
+        safetensors_path = model_dir / "model.safetensors"
+        if not safetensors_path.exists():
+            logger.warning("model.safetensors not found — cannot verify checksum")
+            return True  # Don't block if file layout differs
+
+        h = hashlib.sha256(safetensors_path.read_bytes()).hexdigest()
+        if h != MODEL_SAFETENSORS_SHA256:
+            logger.error(
+                "SECURITY: model.safetensors checksum mismatch! "
+                "Expected %s, got %s. Model may be tampered.",
+                MODEL_SAFETENSORS_SHA256[:16], h[:16],
+            )
+            return False
+        return True
+    except Exception:
+        return True  # Don't block on unexpected model internals
+
+
+def _get_model(model_name: str = DEFAULT_MODEL):
     """Load or return cached SentenceTransformer model."""
     if not _check_sentence_transformers():
         return None
     if model_name not in _model_cache:
         from sentence_transformers import SentenceTransformer
-        # Suppress HuggingFace telemetry — honor "zero network calls" promise
+        # Force fully offline mode — honor "zero network calls" promise
+        # HF_HUB_OFFLINE=1 prevents version-check HEAD requests to huggingface.co
+        # TRANSFORMERS_OFFLINE=1 prevents transformers library network calls
+        # HF_HUB_DISABLE_TELEMETRY=1 prevents usage telemetry
+        # Model must already be cached from initial `engram init` download
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
         os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
-        _model_cache[model_name] = SentenceTransformer(model_name)
+        model = SentenceTransformer(model_name)
+        # Verify model integrity against known checksum
+        if model_name == DEFAULT_MODEL and not _verify_model_checksum(model):
+            raise RuntimeError(
+                "Embedding model checksum verification failed. "
+                "The model weights may have been tampered with. "
+                "Delete the cached model and reinstall: "
+                "rm -rf ~/.cache/huggingface/hub/models--sentence-transformers--all-MiniLM-L6-v2"
+            )
+        _model_cache[model_name] = model
     return _model_cache[model_name]
 
 
@@ -264,6 +314,14 @@ class EmbeddingIndex:
             self._embeddings[tier] = np.vstack([self._embeddings[tier], vec.reshape(1, -1)])
         self._dirty.add(tier)
         return True
+
+    def get_embedding(self, artifact_path: str) -> 'np.ndarray | None':
+        """Return the full-precision embedding for an artifact (hot tier), or None."""
+        if "hot" in self._paths and artifact_path in self._paths["hot"]:
+            idx = self._paths["hot"].index(artifact_path)
+            if self._embeddings["hot"] is not None and idx < len(self._embeddings["hot"]):
+                return self._embeddings["hot"][idx]
+        return None
 
     def _remove_from_tier(self, artifact_path: str, tier: str) -> None:
         """Remove an artifact from a specific tier (if present)."""
