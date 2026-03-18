@@ -100,93 +100,248 @@ Gzip-compressed files (`.jsonl.gz` from Claude) are decompressed in memory for i
 
 ## Tier Transitions
 
-| Transition | Age Threshold | Idle Threshold | What Happens |
-|-----------|--------------|----------------|-------------|
-| Hot → Warm | 1 week | 3 days | Minify JSON → zstd-3 compress |
-| Warm → Cold | 1 month | 2 weeks | Decompress warm → strip boilerplate → dict-trained zstd-9 |
-| Cold → Frozen | 3 months | 1 month | Decompress cold → restore boilerplate → Parquet columnar + zstd-19 |
+| Transition | Age Threshold | Idle Threshold |
+|-----------|--------------|----------------|
+| Hot → Warm | 1 week | 3 days |
+| Warm → Cold | 1 month | 2 weeks |
+| Cold → Frozen | 3 months | 1 month |
 
 Both conditions (age AND idle) must be met. All thresholds configurable in `config.json`.
 
-After compression, if encryption is enabled:
-- The compressed file is encrypted with the tier's public key
-- An `.envelope.json` header stores the per-artifact encrypted DEK (in envelope mode)
-- The original/warm/cold file is deleted
-- The embedding is truncated to the tier's Matryoshka dimension
-
----
-
-## Compression Pipeline
-
-Each tier applies different transformations. This is not just "higher zstd levels."
-
-### Warm (4-5x)
+### Full warm transition walkthrough
 
 ```
-Raw JSONL → strip whitespace (30-40% reduction) → zstd level 3
+File: session-2025-09-12.jsonl (1.5 MB)
+  Age: 8 days (> 1 week threshold)
+  Idle: 5 days (> 3 days threshold)
+  Decision: HOT → WARM
+
+  ├─ Pipeline reads raw content
+  │
+  ├─ Stage 1: JSON minification
+  │   Strip whitespace, shorten formatting
+  │   1.5 MB → 1.0 MB (33% removed)
+  │
+  ├─ Stage 2: zstd level 3 compression
+  │   1.0 MB → 340 KB (4.4x from original)
+  │
+  ├─ Stage 3 (if encryption enabled):
+  │   age encrypt with warm tier's public key
+  │   340 KB → 342 KB (.age file)
+  │   Public key only — no private key needed to encrypt
+  │
+  ├─ Original file deleted (or kept if keep_originals=true)
+  │
+  ├─ Metadata updated:
+  │   tier=warm, compressed_path=session.jsonl.zst.age
+  │
+  ├─ Embedding truncated:
+  │   384d float32 → 256d float32 (Matryoshka — drop last 128 dims)
+  │
+  ├─ HNSW entry moved from hot graph to warm graph
+  │
+  └─ Index entry updated: tier=warm
 ```
 
-### Cold (8-12x)
+### Full cold transition walkthrough
 
 ```
-Raw content → strip boilerplate (hash refs replace repeated system prompts)
-            → minify JSON → compress with trained dictionary (zstd level 9)
+Warm artifact: session.jsonl.zst.age (342 KB compressed+encrypted)
+  Age: 5 weeks (> 1 month threshold)
+  Idle: 3 weeks (> 2 weeks threshold)
+  Decision: WARM → COLD
+
+  ├─ Decrypt (if encrypted):
+  │   Rust sidecar retrieves warm private key from Keychain
+  │   Key piped to age via stdin, zeroed immediately
+  │   342 KB → 340 KB (.zst file)
+  │
+  ├─ Decompress warm zstd back to raw content
+  │   340 KB → 1.0 MB (minified JSON)
+  │
+  ├─ Stage 1: Boilerplate stripping
+  │   The 3,000-token system prompt repeated in every session:
+  │     "You are Claude, an AI assistant. <system-reminder>..."
+  │   Replaced with: BOILERPLATE_REF:a3f7b2e1 (64 bytes)
+  │   Original stored once in ~/.engram/boilerplate/a3f7b2e1.boilerplate
+  │   Content reduced by 40-70%
+  │   1.0 MB → 400 KB
+  │
+  ├─ Stage 2: JSON minification (cleanup pass)
+  │
+  ├─ Stage 3: Dictionary-trained zstd level 9
+  │   The compression dictionary (112 KB, trained on your 500 sessions)
+  │   already knows your JSON schema, common tokens, tool call formats.
+  │   It only compresses what's actually unique to this session.
+  │   400 KB → 150 KB (10x from original)
+  │
+  ├─ Stage 4 (if encryption):
+  │   age encrypt with cold tier's public key
+  │   Different keypair than warm — compromise warm, cold stays safe
+  │
+  ├─ Embedding truncated:
+  │   256d float32 → 128d int8 quantized (4x smaller)
+  │
+  ├─ HNSW entry moved to cold graph
+  │
+  └─ PQ codebook encodes the embedding:
+      128 dims → 8 uint8 centroid indices (8 bytes)
 ```
 
-The compression dictionary (`compression.dict`, 112 KB) is trained on your actual session logs. It encodes the shared schema (JSON keys, common tokens, tool call formats) as known byte patterns.
-
-### Frozen (20-50x)
+### Full frozen transition walkthrough
 
 ```
-Raw JSONL → strip boilerplate → minify
-          → transpose rows to columns (Parquet format)
-          → per-column encoding:
-              "role" column: run-length encoding (cardinality 2)
-              "timestamp" column: delta encoding (monotonic ints)
-              "content" column: dictionary encoding + zstd-19
+Cold artifact: session.jsonl.cold.zst.age (152 KB compressed+encrypted)
+  Age: 4 months (> 3 months threshold)
+  Idle: 6 weeks (> 1 month threshold)
+  Decision: COLD → FROZEN
+
+  ├─ Decrypt cold artifact (sidecar + cold private key)
+  │
+  ├─ Decompress cold zstd (using trained dictionary)
+  │
+  ├─ Restore boilerplate references:
+  │   BOILERPLATE_REF:a3f7b2e1 → look up in boilerplate store
+  │   → full system prompt text restored
+  │
+  ├─ Stage 1: Boilerplate strip (fresh pass for frozen pipeline)
+  │
+  ├─ Stage 2: Minify JSON
+  │
+  ├─ Stage 3: Columnar Parquet conversion
+  │   JSONL rows:
+  │     {"role":"user","content":"What about auth?","timestamp":1710000000}
+  │     {"role":"assistant","content":"Here's my analysis...","timestamp":1710000060}
+  │     {"role":"user","content":"And the JWT flow?","timestamp":1710000120}
+  │
+  │   Transposed to columns:
+  │     role column:      ["user","assistant","user","assistant",...]
+  │       → cardinality 2 → run-length encoding → ~0 bytes
+  │     timestamp column: [1710000000, 1710000060, 1710000120,...]
+  │       → monotonically increasing → delta encoding → ~0 bytes
+  │       (deltas are [60, 60, 60,...] → single value repeated)
+  │     content column:   actual conversation text
+  │       → dictionary encoded + zstd level 19
+  │       → this is the only column with real entropy
+  │
+  │   Result: 50 KB (30x from original 1.5 MB)
+  │
+  ├─ Stage 4 (if encryption):
+  │   age encrypt with frozen tier's public key
+  │   Third independent keypair
+  │
+  ├─ Embedding truncated:
+  │   128d int8 → 64d binary via numpy.packbits
+  │   96 bytes per artifact
+  │   Searched via Hamming distance (CPU popcount instruction)
+  │
+  └─ LSH hash updated for O(1) frozen-tier lookup
 ```
 
 ---
 
 ## Search and Retrieval
 
-Search never decompresses artifacts. It operates on the precomputed index. When embeddings are available (`pip install engram[embeddings]`), search uses hybrid retrieval (keyword + vector + reciprocal rank fusion). Without embeddings, it falls back to keyword-only.
+Search never decompresses artifacts. It operates entirely on the precomputed index. When embeddings are available (`pip install engram[embeddings]`), search uses hybrid retrieval. Without embeddings, it falls back to keyword-only.
+
+### Full retrieval flow
 
 ```
 Query: "authentication refactor"
-
-Layer 1: KEYWORD LOOKUP — O(1) per keyword
-  Inverted index: "authentication" → [art_42, art_891]
-
-Layer 2: LSH HASH — O(1)
-  Random hyperplane hash → bucket → candidate artifacts
-
-Layer 3: HNSW GRAPH — O(log n) per tier
-  Navigate nearest-neighbor graph at each tier's dimension:
-    hot (384d) → warm (256d) → cold (128d) → frozen (64d binary)
-
-Layer 4: RECIPROCAL RANK FUSION
-  Merge keyword + vector results: RRF_score = Σ(1/(60+rank_i))
-
-Layer 5: RERANK (optional)
-  Top results re-scored with full cosine similarity
+  │
+  ├─ Layer 1: KEYWORD LOOKUP TABLE — O(1) per keyword
+  │   Inverted index in semantic-index.json:
+  │     "authentication" → [artifact_42, artifact_891, artifact_2204]
+  │     "refactor" → [artifact_42, artifact_155, artifact_891]
+  │   Intersection: [artifact_42, artifact_891]
+  │   Cost: O(1) hash lookup per keyword
+  │
+  ├─ Layer 2: LSH HASH TABLE — O(1)
+  │   Hash the query embedding with 12 random hyperplanes
+  │   across 4 independent hash tables (4096 buckets each)
+  │   hash(query_embedding) → bucket_7294
+  │   bucket_7294 contains: [artifact_42, artifact_891, artifact_3001]
+  │   Cost: O(1) hash + O(bucket_size) scan
+  │
+  ├─ Layer 3: HNSW GRAPH — O(log n) per tier
+  │   Navigate nearest-neighbor graph at each tier's dimension:
+  │     Hot graph (384d float32): top matches from recent files
+  │     Warm graph (256d float32): top matches from last month
+  │     Cold graph (128d int8): top matches from older files
+  │     Frozen (64d binary): Hamming distance via popcount
+  │   Top-5: [artifact_42, artifact_891, artifact_3001, artifact_155, artifact_7]
+  │   Cost: O(log n) per tier
+  │
+  ├─ Layer 4: RECIPROCAL RANK FUSION
+  │   Merge keyword results + vector results:
+  │   RRF_score(artifact) = Σ(1/(60 + rank_i)) for each ranked list
+  │   Dedup by artifact path (same artifact found by both searches)
+  │   Sort by combined RRF score
+  │   Cost: O(results) — trivial
+  │
+  ├─ Layer 5: RERANK (optional)
+  │   Top results re-scored with full cosine similarity
+  │   on original embeddings (not the truncated tier versions)
+  │   Cost: O(top_k) — only on the final result set
+  │
+  └─ Output: ranked list of artifacts with summaries
+     The AI sees summaries at 10-20% of token cost
+     Full content available via engram recall <path>
 ```
 
-The AI sees summaries (10-20% of token cost). Full recall only on demand.
+No decompression happened. The index, embeddings, and graphs are always in memory. The compressed files on disk were never touched.
 
 ---
 
 ## Recall
 
-When full content is needed:
+When the AI needs the full content of a compressed/encrypted artifact:
 
-1. Look up artifact in registry → find compressed path and tier
-2. **Decrypt** (if encrypted) → Rust sidecar retrieves private key from Keychain, pipes to age via stdin, zeros key
-3. **Decompress** → pipeline reversal (Parquet → JSONL, restore boilerplate, decompress zstd)
-4. **Integrity check** → SHA-256 of decompressed content vs stored hash
-5. **Restore to hot tier** → file written to original location, metadata updated, embedding restored to full 384d
+```
+engram recall ~/.claude/projects/.../session-2025-06.jsonl
+  │
+  ├─ Step 1: Registry lookup
+  │   Look up in artifact-registry.json:
+  │     tier: cold
+  │     compressed_path: session-2025-06.jsonl.cold.zst.age
+  │     encrypted: true
+  │     sha256: 92d54fa6...
+  │
+  ├─ Step 2: Decrypt (if encrypted)
+  │   Python sends "DECRYPT <path> <output> cold" to engram-vault
+  │   Rust sidecar:
+  │     → Retrieves cold private key from macOS Keychain
+  │     → Touch ID prompt on Apple Silicon
+  │     → Key held in mlock'd memory (not swappable)
+  │     → Key piped to age via /dev/stdin (not argv, not disk)
+  │     → Key zeroed via zeroize immediately after
+  │     → Decrypted .zst file returned
+  │   Python receives: "OK"
+  │   Python never saw the private key.
+  │
+  ├─ Step 3: Decompress
+  │   Pipeline reversal based on tier:
+  │     Cold: zstd decompress using trained dictionary
+  │           → restore boilerplate references from store
+  │           (BOILERPLATE_REF:a3f7b2e1 → full system prompt)
+  │     Frozen: Parquet → JSONL conversion
+  │             → restore boilerplate references
+  │
+  ├─ Step 4: Integrity check
+  │   SHA-256 of decompressed content compared against stored hash
+  │   Mismatch → abort + warning (file was tampered or corrupted)
+  │   Match → proceed
+  │
+  ├─ Step 5: Restore to hot tier
+  │   File written back to original location
+  │   Metadata updated: tier=hot, last_accessed=now
+  │   Embedding restored to full 384d float32 in hot HNSW graph
+  │
+  └─ AI reads the file normally
+     On next engram run, it'll re-tier based on age + idle time
+```
 
-Retrieval time: warm ~10ms, cold ~500ms, frozen ~5 seconds. Add ~1-2 seconds for Touch ID if encrypted.
+Retrieval times: warm ~10ms, cold ~500ms, frozen ~5 seconds. Add ~1-2 seconds for Touch ID prompt if encrypted.
 
 ---
 
@@ -375,18 +530,30 @@ When `engram lock` runs, the audit log is included in the encrypted index bundle
 
 ## Lookup Tables
 
-Every retrieval step uses precomputed lookup tables instead of recomputation:
+The architecture is nested lookup tables all the way down. Every retrieval step uses precomputed data instead of recomputation — the same principle DeepSeek uses when they absorb projection matrices into precomputed operations, and MemoryFormer uses when it replaces linear layers with hash table lookups.
 
-| Lookup Table | What It Replaces | When Built |
-|-------------|-----------------|------------|
-| Keyword inverted index | Scanning every file for a string | Registration |
-| Compression dictionary (112 KB) | Relearning compression patterns per file | Dictionary training (one-time) |
-| Boilerplate store | Storing 4,500 copies of the same prompt | Cold tier transition |
-| HNSW nearest-neighbor graph | Linear scan over all embeddings | Registration |
-| LSH hash table (4 tables × 4096 buckets) | Full similarity computation | Registration |
-| PQ codebook (8 sub-vectors × 256 centroids) | Storing full 3,072-byte embeddings | Codebook training (one-time) |
-| Matryoshka truncation | Training separate models per tier | Built into the embedding model |
-| Binary packbits | Float32 cosine similarity | Frozen tier transition |
+| What's Stored Once | What It Replaces | Size | Speed |
+|-------------------|-----------------|------|-------|
+| Keyword inverted index | Scanning every file for a string | ~1 MB for 10K artifacts | O(1) per keyword |
+| Compression dictionary | Relearning compression patterns per file | 112 KB (one-time training) | 2-5x faster compression |
+| Boilerplate store | Storing 4,500 copies of the same prompt | 64 bytes per ref vs 5,000 tokens per copy | O(1) hash lookup |
+| HNSW nearest-neighbor graph | Linear scan over all embeddings | ~10 MB for 10K artifacts | O(log n) vs O(n) |
+| LSH hash tables | Full similarity computation | 4 tables × 4096 buckets | O(1) hash + bucket scan |
+| PQ codebook | Storing full 3,072-byte embeddings | 8 bytes per artifact (384x reduction) | O(M) centroid lookups |
+| Matryoshka truncation | Training separate embedding models per tier | Zero extra cost (truncate) | Same model, 4 resolutions |
+| Binary packbits | Float32 cosine similarity on frozen tier | 8 bytes per artifact (vs 1,536) | Hamming via CPU popcount |
+
+### Why this makes it efficient
+
+Without lookup tables, every search would: scan every file on disk for a keyword match, decompress candidates to check content, and compute full cosine similarity over full-dimension embeddings. With the lookup table stack:
+
+- **Keyword search drops from O(files × file_size) to O(1) per keyword.** The inverted index maps keywords to artifact IDs directly.
+- **Vector search drops from O(n × 384) to O(log n).** HNSW navigates a graph instead of computing similarity against every embedding.
+- **Frozen-tier search drops from cosine similarity (768 multiplications per pair) to Hamming distance (single popcount instruction).** Binary embeddings at 8 bytes are 192x smaller than float32 at 1,536 bytes.
+- **Compression skips 40-70% of content** because the boilerplate store replaces repeated system prompts with hash references. The compressor never sees content that was already stored once.
+- **The dictionary lets zstd skip schema learning.** Without a trained dictionary, zstd must rediscover that `"role":`, `"content":`, `"timestamp":` are common patterns in every file. With the dictionary, those patterns are precomputed byte codes.
+
+The net effect: a search across 10,000 artifacts completes in under 50ms. A recall from frozen tier takes ~5 seconds. Without lookup tables, the same search would take seconds (full scan) and recall would require decompressing every candidate to check content.
 
 ---
 

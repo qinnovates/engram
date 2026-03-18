@@ -47,6 +47,31 @@ Sidecar calls the command, captures key from stdout, uses it, zeros it. The comm
 ```
 For ephemeral CI/CD runners only. Not for persistent machines.
 
+### YubiKey / FIDO2 (hardware-bound, most secure)
+
+The private key never leaves the YubiKey hardware. This is the most secure option available.
+
+```bash
+# Install the age YubiKey plugin
+brew install age-plugin-yubikey
+
+# Generate a YubiKey-backed identity
+age-plugin-yubikey  # follow the prompts — key is generated ON the YubiKey
+
+# The plugin outputs a recipient (public key) and an identity file
+# The identity file does NOT contain the private key — it's a pointer
+# to the key slot on the YubiKey. The private key never leaves hardware.
+```
+
+Configure in `config.json`:
+```json
+"warm_private_source": "command:age -d -i ~/.age/yubikey-identity.txt"
+```
+
+The sidecar calls `age` with the YubiKey identity. `age` talks to the YubiKey via the plugin. The private key stays on the hardware chip. Not in the sidecar's memory. Not in Python. Not on disk. Not anywhere except the YubiKey.
+
+**Requires:** Physical YubiKey inserted during decrypt/recall operations. No YubiKey = no access to encrypted data. That's the point.
+
 ### File-based keys
 **Blocked.** The `file:` source raises an error. Keys must not exist as files on disk.
 
@@ -63,9 +88,10 @@ For ephemeral CI/CD runners only. Not for persistent machines.
 
 ## Risk comparison
 
-| Source | Key on Disk | Key in Args | Key in Python | Automation |
-|--------|-----------|------------|--------------|-----------|
-| Keychain | No | No | No | Touch ID |
-| Command (Vault/KMS) | No | No | No | Yes |
-| Environment | No | No | No | Yes |
+| Source | Key on Disk | Key in Memory | Key in Python | Automation |
+|--------|-----------|--------------|--------------|-----------|
+| YubiKey/FIDO2 | No | No (hardware) | No | Physical key required |
+| Keychain (macOS) | No | Sidecar only (mlock'd) | No | Touch ID |
+| Command (Vault/KMS) | No | Sidecar only (mlock'd) | No | Yes |
+| Environment | No | Process env | No | Yes |
 | File | Blocked | — | — | — |
