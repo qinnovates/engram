@@ -181,16 +181,27 @@ class TieringEngine:
         return discovered
 
     def register_all(self, paths: list[Path]) -> None:
-        """Register all discovered files in the metadata store and semantic index."""
+        """Register all discovered files in the metadata store and semantic index.
+
+        Transparently handles gzip-compressed files (.gz) by decompressing
+        in memory for indexing. The file on disk stays compressed.
+        """
+        import gzip
+
         for p in paths:
             meta = self.metadata.register(p)
             # Index content for context enhancement (only if not already indexed)
             if not self.index.get(p) and p.exists():
                 try:
-                    content = p.read_text(errors="replace")
+                    if p.name.endswith(".gz"):
+                        # Decompress gzip in memory for indexing only
+                        with gzip.open(p, "rt", errors="replace") as f:
+                            content = f.read(102_400)  # Cap at 100KB for indexing
+                    else:
+                        content = p.read_text(errors="replace")
                     self.index.index_artifact(p, content, meta)
-                except (PermissionError, OSError):
-                    pass  # Skip unreadable files
+                except (PermissionError, OSError, gzip.BadGzipFile):
+                    pass  # Skip unreadable or corrupt files
         self.metadata.save()
         self.index.save()
 
