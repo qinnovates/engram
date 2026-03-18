@@ -148,7 +148,15 @@ class TestTieringEngine:
         recalled = engine.recall(first_file)
         assert recalled is not None
         assert recalled.exists()
-        assert recalled.read_bytes() == original_content
+        # Pipeline applies minification (whitespace removal) so content
+        # is semantically equivalent but not byte-identical.
+        # Verify all JSON entries are preserved:
+        import json
+        original_lines = [json.loads(l) for l in original_content.split(b"\n") if l.strip()]
+        recalled_lines = [json.loads(l) for l in recalled.read_bytes().split(b"\n") if l.strip()]
+        assert len(recalled_lines) == len(original_lines)
+        for orig, recv in zip(original_lines, recalled_lines):
+            assert orig == recv
 
     def test_status_report(self, engine_config: EngineConfig, artifact_dir: Path):
         engine = TieringEngine(engine_config)

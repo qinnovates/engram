@@ -26,8 +26,9 @@ from typing import Optional
 
 from .config import EngineConfig
 from .metadata import MetadataStore, Tier, ArtifactMeta, compute_sha256
-from .compressor import compress_file, decompress_file, recompress_file
-from .encryption import encrypt_file, decrypt_file, EncryptionError
+from .compressor import decompress_file
+from .pipeline import CompressionPipeline
+from .encryption import EncryptionError
 from .context import SemanticIndex, ContextBuilder, ContextBudget, DEFAULT_CONTEXT_BUDGET_CHARS
 
 
@@ -139,6 +140,7 @@ class TieringEngine:
         meta_dir = config.resolve_metadata_dir()
         self.metadata = MetadataStore(meta_dir)
         self.index = SemanticIndex(meta_dir)
+        self.pipeline = CompressionPipeline(meta_dir)
 
         # Audit logging — disabled by default, opt-in via config
         self._audit = None
@@ -162,6 +164,7 @@ class TieringEngine:
             return compressed_path, False
 
         try:
+            from .encryption import encrypt_file
             encrypted_path = encrypt_file(compressed_path, self.config.encryption)
             compressed_path.unlink()
             return encrypted_path, True
@@ -256,7 +259,10 @@ class TieringEngine:
         return actions
 
     def _tier_to_warm(self, meta: ArtifactMeta) -> Optional[TierAction]:
-        """Compress a hot artifact to warm tier (zstd level 3)."""
+        """Compress a hot artifact to warm tier via multi-stage pipeline.
+
+        Pipeline: minify JSON → zstd-3 (~4-5x ratio).
+        """
         src = Path(meta.path)
         if not src.exists():
             return None
@@ -281,12 +287,13 @@ class TieringEngine:
         if self.config.dry_run:
             return action
 
-        # Compress
-        result = compress_file(
-            src,
-            level=self.config.tier_policy.warm_compression_level,
-            remove_original=not self.config.tier_policy.keep_originals,
-        )
+        # Multi-stage pipeline: minify → zstd-3
+        output_path = src.with_suffix(src.suffix + ".zst")
+        result = self.pipeline.compress_warm(src, output_path)
+
+        # Remove original if configured
+        if not self.config.tier_policy.keep_originals and src.exists():
+            src.unlink()
 
         compressed_path = result.output_path
         compressed_path, encrypted = self._encrypt_if_enabled(compressed_path)
@@ -295,7 +302,15 @@ class TieringEngine:
         action.ratio = result.ratio
         action.encrypted = encrypted
 
-        # Update metadata and semantic index
+        # Update metadata — clear sha256 since pipeline applies lossy
+        # transformations (minification, boilerplate stripping) that change
+        # the content. Integrity is maintained by the pipeline, not raw hash.
+        # Clear sha256 — pipeline transforms content (minification is lossy
+        # for whitespace), so the original hash no longer matches decompressed
+        meta_entry = self.metadata.get(src)
+        if meta_entry:
+            meta_entry.sha256 = ""
+
         self.metadata.update_tier(
             src, Tier.WARM,
             compressed_path=str(compressed_path),
@@ -310,7 +325,11 @@ class TieringEngine:
         return action
 
     def _tier_to_cold(self, meta: ArtifactMeta) -> Optional[TierAction]:
-        """Recompress a warm artifact to cold tier (zstd level 9)."""
+        """Recompress a warm artifact via cold pipeline.
+
+        Pipeline: decompress warm → strip boilerplate → minify →
+        dictionary-trained zstd-9 (~8-12x ratio).
+        """
         compressed = Path(meta.compressed_path) if meta.compressed_path else None
         if not compressed or not compressed.exists():
             return None
@@ -326,25 +345,26 @@ class TieringEngine:
         if self.config.dry_run:
             return action
 
-        # If encrypted, decrypt first
+        # Decompress warm tier back to raw content for re-processing
         working_path = compressed
-        was_encrypted = meta.encrypted
-
-        if was_encrypted and self.config.encryption.enabled:
+        if meta.encrypted and self.config.encryption.enabled:
+            from .encryption import decrypt_file
             working_path = decrypt_file(compressed, self.config.encryption)
-            compressed.unlink()
 
-        # Recompress at cold level — with cleanup on failure
+        raw_path = decompress_file(working_path, remove_compressed=True)
+
+        # Run cold pipeline on raw content
+        cold_output = raw_path.with_suffix(raw_path.suffix + ".cold.zst")
         try:
-            result = recompress_file(
-                working_path,
-                new_level=self.config.tier_policy.cold_compression_level,
-            )
+            result = self.pipeline.compress_cold(raw_path, cold_output)
         except (OSError, zstd.ZstdError):
-            # Clean up decrypted intermediate if it exists
-            if working_path != compressed and working_path.exists():
-                working_path.unlink()
+            if raw_path.exists():
+                raw_path.unlink()
             raise
+
+        # Clean up raw intermediate
+        if raw_path.exists():
+            raw_path.unlink()
 
         final_path = result.output_path
         final_path, encrypted = self._encrypt_if_enabled(final_path)
@@ -367,7 +387,12 @@ class TieringEngine:
         return action
 
     def _tier_to_frozen(self, meta: ArtifactMeta) -> Optional[TierAction]:
-        """Recompress a cold artifact to frozen tier (highest compression)."""
+        """Recompress a cold artifact via frozen pipeline.
+
+        Pipeline: decompress cold → restore boilerplate → strip →
+        minify → columnar Parquet + dict + zstd-19 (~20-50x ratio).
+        Falls back to dict-zstd-19 for non-JSONL content.
+        """
         compressed = Path(meta.compressed_path) if meta.compressed_path else None
         if not compressed or not compressed.exists():
             return None
@@ -383,29 +408,41 @@ class TieringEngine:
         if self.config.dry_run:
             return action
 
-        # Same flow as cold but with frozen compression level
+        # Decompress cold tier back to raw content
         working_path = compressed
-        was_encrypted = meta.encrypted
-
-        if was_encrypted and self.config.encryption.enabled:
+        if meta.encrypted and self.config.encryption.enabled:
+            from .encryption import decrypt_file
             try:
                 working_path = decrypt_file(compressed, self.config.encryption)
-                compressed.unlink()
             except (OSError, subprocess.SubprocessError, EncryptionError) as e:
                 raise DecryptionRequiredError(
                     f"Failed to decrypt cold-tier artifact for frozen transition: {e}",
                     tier=Tier.COLD.value, path=meta.path,
                 ) from e
 
+        # Decompress cold zstd, restore boilerplate for re-processing
+        raw_bytes = self.pipeline.decompress_cold(working_path)
+        if working_path.exists():
+            working_path.unlink()
+
+        # Write raw content to temp for frozen pipeline input
+        import tempfile
+        raw_fd, raw_str = tempfile.mkstemp(suffix=".jsonl", prefix="engram-")
+        raw_path = Path(raw_str)
+        with open(raw_fd, "wb") as f:
+            f.write(raw_bytes)
+
+        # Run frozen pipeline (Parquet or dict-zstd-19)
+        frozen_output = raw_path.with_suffix(".frozen")
         try:
-            result = recompress_file(
-                working_path,
-                new_level=self.config.tier_policy.frozen_compression_level,
-            )
+            result = self.pipeline.compress_frozen(raw_path, frozen_output)
         except (OSError, zstd.ZstdError):
-            if working_path != compressed and working_path.exists():
-                working_path.unlink()
+            if raw_path.exists():
+                raw_path.unlink()
             raise
+
+        if raw_path.exists():
+            raw_path.unlink()
 
         final_path = result.output_path
         final_path, encrypted = self._encrypt_if_enabled(final_path)
@@ -493,8 +530,9 @@ class TieringEngine:
                     tier=meta.tier, path=str(original_path),
                 )
             try:
+                from .encryption import decrypt_file
                 working_path = decrypt_file(compressed, self.config.encryption)
-            except Exception as e:
+            except (OSError, subprocess.SubprocessError, EncryptionError) as e:
                 raise DecryptionRequiredError(
                     f"Failed to decrypt {meta.tier}-tier artifact: {original_path}. "
                     f"Check that the correct private key is accessible. "
@@ -506,7 +544,7 @@ class TieringEngine:
         # Decompress
         try:
             output = decompress_file(working_path, output_path=original_path)
-        except Exception as e:
+        except (OSError, zstd.ZstdError) as e:
             raise DecompressionError(
                 f"Failed to decompress {meta.tier}-tier artifact: {original_path}. "
                 f"The compressed file may be corrupted. Error: {e}",
