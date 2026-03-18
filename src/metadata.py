@@ -62,6 +62,7 @@ class MetadataStore:
         self.metadata_dir = metadata_dir
         self.db_path = metadata_dir / "artifact-registry.json"
         self._artifacts: dict[str, ArtifactMeta] = {}
+        self._dirty: bool = False
         self._load()
 
     # Known fields in ArtifactMeta — used to filter out unknown keys
@@ -85,7 +86,9 @@ class MetadataStore:
             except json.JSONDecodeError:
                 self._artifacts = {}
 
-    def save(self) -> None:
+    def save(self, force: bool = False) -> None:
+        if not force and not self._dirty:
+            return
         self.metadata_dir.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": 1,
@@ -100,6 +103,7 @@ class MetadataStore:
         with os.fdopen(fd, "w") as f:
             json.dump(payload, f, indent=2)
         tmp.rename(self.db_path)
+        self._dirty = False
 
     def register(self, path: Path) -> ArtifactMeta:
         """Register or update a file in the metadata store."""
@@ -137,6 +141,7 @@ class MetadataStore:
             )
 
         self._artifacts[key] = meta
+        self._dirty = True
         return meta
 
     def get(self, path: Path) -> Optional[ArtifactMeta]:
@@ -147,6 +152,7 @@ class MetadataStore:
         key = str(path.resolve())
         if key in self._artifacts:
             self._artifacts[key].last_accessed = time.time()
+            self._dirty = True
 
     def update_tier(self, path: Path, tier: Tier, compressed_path: Optional[str] = None,
                     compressed_size: int = 0, ratio: float = 1.0, encrypted: bool = False) -> None:
@@ -159,10 +165,12 @@ class MetadataStore:
             meta.compressed_size = compressed_size
             meta.compression_ratio = ratio
             meta.encrypted = encrypted
+            self._dirty = True
 
     def remove(self, path: Path) -> None:
         key = str(path.resolve())
-        self._artifacts.pop(key, None)
+        if self._artifacts.pop(key, None) is not None:
+            self._dirty = True
 
     def all_artifacts(self) -> list[ArtifactMeta]:
         return list(self._artifacts.values())

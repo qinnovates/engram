@@ -116,7 +116,14 @@ class SemanticIndex:
     def __init__(self, index_dir: Path):
         self.index_path = index_dir / "semantic-index.json"
         self._entries: dict[str, ArtifactSummary] = {}
+        self._dirty: bool = False
         self._load()
+
+    # Known fields — filter out unknown keys to prevent injection/crash
+    _KNOWN_FIELDS = {
+        "path", "tier", "summary", "keywords", "line_count", "char_count",
+        "created_at", "last_accessed", "relevance_score",
+    }
 
     def _load(self) -> None:
         if self.index_path.exists():
@@ -124,11 +131,39 @@ class SemanticIndex:
                 with open(self.index_path) as f:
                     data = json.load(f)
                 for key, val in data.get("entries", {}).items():
-                    self._entries[key] = ArtifactSummary(**val)
-            except (json.JSONDecodeError, TypeError):
+                    filtered = {k: v for k, v in val.items()
+                                if k in self._KNOWN_FIELDS}
+                    # Sanitize summary — strip potential prompt injection
+                    if "summary" in filtered:
+                        filtered["summary"] = self._sanitize_summary(
+                            filtered["summary"])
+                    self._entries[key] = ArtifactSummary(**filtered)
+            except json.JSONDecodeError:
                 self._entries = {}
 
-    def save(self) -> None:
+    @staticmethod
+    def _sanitize_summary(summary: str) -> str:
+        """Strip potential prompt injection patterns from summaries."""
+        if not isinstance(summary, str):
+            return ""
+        # Limit length
+        summary = summary[:200]
+        # Strip markdown headers that could inject AI instructions
+        lines = []
+        for line in summary.split("\n"):
+            stripped = line.strip().lower()
+            # Block common injection patterns
+            if any(p in stripped for p in [
+                "system:", "assistant:", "ignore previous",
+                "you are now", "disregard", "forget your",
+            ]):
+                continue
+            lines.append(line)
+        return " ".join(lines).strip()
+
+    def save(self, force: bool = False) -> None:
+        if not force and not self._dirty:
+            return
         import os
         from dataclasses import asdict
         payload = {
@@ -142,6 +177,7 @@ class SemanticIndex:
         with os.fdopen(fd, "w") as f:
             json.dump(payload, f, indent=2)
         tmp.rename(self.index_path)
+        self._dirty = False
 
     def index_artifact(self, path: Path, content: str, meta: ArtifactMeta) -> ArtifactSummary:
         """
@@ -152,8 +188,13 @@ class SemanticIndex:
         """
         key = str(path.resolve())
 
-        keywords = self._extract_keywords(content)
-        summary = self._generate_summary(content, path)
+        # Cap content for keyword extraction (100KB is sufficient;
+        # the long tail adds noise, not signal — and prevents OOM on large files)
+        MAX_INDEX_CHARS = 102_400
+        index_content = content[:MAX_INDEX_CHARS] if len(content) > MAX_INDEX_CHARS else content
+
+        keywords = self._extract_keywords(index_content)
+        summary = self._generate_summary(index_content, path)
 
         entry = ArtifactSummary(
             path=str(path),
@@ -167,6 +208,7 @@ class SemanticIndex:
         )
 
         self._entries[key] = entry
+        self._dirty = True
         return entry
 
     def update_tier(self, path: Path, tier: str) -> None:
@@ -174,6 +216,7 @@ class SemanticIndex:
         key = str(path.resolve())
         if key in self._entries:
             self._entries[key].tier = tier
+            self._dirty = True
 
     def search(self, query: str, max_results: int = 10) -> list[ArtifactSummary]:
         """
@@ -417,7 +460,9 @@ class ContextBuilder:
             relevant = [e for e in relevant if e.tier != "hot"]
 
             if relevant:
-                rel_header = f"\n### Relevant to: \"{query[:50]}\"\n"
+                # Sanitize query before embedding in context output
+                safe_query = re.sub(r'[\n\r#*`\[\]]', '', query[:50]).strip()
+                rel_header = f"\n### Relevant to: \"{safe_query}\"\n"
                 self.budget.consume(rel_header)
                 sections.append(rel_header)
 

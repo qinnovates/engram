@@ -241,9 +241,8 @@ def encrypt_dek_with_pubkey(dek: bytes, pubkey: str) -> bytes:
     """
     Encrypt a DEK using an age public key (asymmetric).
 
-    This is the core asymmetric operation: the DEK is encrypted with
-    the recipient's public key. Only the corresponding private key
-    can decrypt it.
+    DEK is piped via stdin — it NEVER touches disk as plaintext.
+    age reads from stdin and writes ciphertext to stdout.
 
     age uses:
       - X25519 key agreement (classical)
@@ -260,45 +259,30 @@ def encrypt_dek_with_pubkey(dek: bytes, pubkey: str) -> bytes:
     Returns:
         age ciphertext bytes containing the encrypted DEK.
     """
-    check_age_installed()
+    _check_age_cached()
     _validate_recipient(pubkey)
 
-    # Write DEK to temp file, encrypt with age, read ciphertext
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".dek") as dek_file:
-        dek_path = Path(dek_file.name)
-        os.chmod(dek_path, 0o600)
-        dek_file.write(dek)
+    # Pipe DEK via stdin — never touches disk (CRITICAL: fixes temp file race)
+    result = subprocess.run(
+        ["age", "-r", pubkey],
+        input=dek, capture_output=True, timeout=30,
+    )
+    if result.returncode != 0:
+        raise EncryptionError("Failed to encrypt DEK with age")
 
-    ct_fd, ct_path_str = tempfile.mkstemp(suffix=".dek.age")
-    ct_path = Path(ct_path_str)
-    os.close(ct_fd)
-
-    try:
-        result = subprocess.run(
-            ["age", "-r", pubkey, "-o", str(ct_path), str(dek_path)],
-            capture_output=True, text=True, timeout=30,
-        )
-        if result.returncode != 0:
-            raise EncryptionError("Failed to encrypt DEK with age")
-
-        ciphertext = ct_path.read_bytes()
-    finally:
-        # Secure cleanup
-        if dek_path.exists():
-            dek_path.write_bytes(b"\x00" * DEK_SIZE)
-            dek_path.unlink()
-        if ct_path.exists():
-            ct_path.unlink()
-
-    return ciphertext
+    return result.stdout
 
 
 def decrypt_dek_with_privkey(encrypted_dek: bytes, private_key: str) -> bytes:
     """
     Decrypt a DEK using an age private key (asymmetric).
 
-    The private key is provided as a string (retrieved from vault on-demand),
-    written to a temp file with 0600 permissions, used, then securely deleted.
+    Private key is piped via a process substitution fd — it NEVER
+    touches disk as a plaintext file. Encrypted DEK is piped via stdin.
+
+    Key material is stored as bytearray and zeroed after use (best effort
+    in Python, but zeroing mutable bytes is more reliable than reassigning
+    immutable strings).
 
     Args:
         encrypted_dek: age ciphertext containing the encrypted DEK.
@@ -307,54 +291,68 @@ def decrypt_dek_with_privkey(encrypted_dek: bytes, private_key: str) -> bytes:
     Returns:
         32-byte plaintext DEK.
     """
-    check_age_installed()
+    _check_age_cached()
 
-    # Write private key to temp (0600, unpredictable name)
-    key_fd, key_path_str = tempfile.mkstemp(suffix=".key", prefix="tm-")
-    key_path = Path(key_path_str)
-    with os.fdopen(key_fd, "w") as f:
-        f.write(private_key)
-    os.chmod(key_path, 0o600)
+    # Convert to bytearray for zeroing (mutable, unlike str)
+    key_bytes = bytearray(private_key.encode("utf-8"))
 
-    # Write encrypted DEK to temp
-    ct_fd, ct_path_str = tempfile.mkstemp(suffix=".dek.age")
-    ct_path = Path(ct_path_str)
-    with os.fdopen(ct_fd, "wb") as f:
-        f.write(encrypted_dek)
-
-    # Output for decrypted DEK
-    out_fd, out_path_str = tempfile.mkstemp(suffix=".dek")
-    out_path = Path(out_path_str)
-    os.close(out_fd)
+    # Use a named pipe (FIFO) for the identity file — the key passes through
+    # the pipe and is never written to a regular file on disk.
+    fifo_dir = tempfile.mkdtemp(prefix="tm-")
+    fifo_path = os.path.join(fifo_dir, "identity")
 
     try:
-        result = subprocess.run(
-            ["age", "-d", "-i", str(key_path), "-o", str(out_path), str(ct_path)],
-            capture_output=True, text=True, timeout=30,
+        os.mkfifo(fifo_path, mode=0o600)
+
+        # Start age reading from the FIFO (it blocks until the pipe is written)
+        proc = subprocess.Popen(
+            ["age", "-d", "-i", fifo_path],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-        if result.returncode != 0:
+
+        # Write private key to the FIFO (this unblocks age)
+        # Must happen in a thread or after Popen since FIFO blocks on open
+        with open(fifo_path, "wb") as fifo:
+            fifo.write(key_bytes)
+
+        # Send encrypted DEK via stdin, collect decrypted output
+        stdout, stderr = proc.communicate(input=encrypted_dek, timeout=30)
+
+        if proc.returncode != 0:
             raise EncryptionError(
                 "Failed to decrypt DEK — wrong key or corrupted ciphertext"
             )
 
-        dek = out_path.read_bytes()
-
+        dek = stdout
         if len(dek) != DEK_SIZE:
             raise EncryptionError(
                 f"Decrypted DEK has wrong size: {len(dek)} (expected {DEK_SIZE})"
             )
 
-        return dek
+        return bytes(dek)
     finally:
-        # Secure cleanup — overwrite then delete
-        if key_path.exists():
-            key_path.write_bytes(b"\x00" * 256)
-            key_path.unlink()
-        if ct_path.exists():
-            ct_path.unlink()
-        if out_path.exists():
-            out_path.write_bytes(b"\x00" * DEK_SIZE)
-            out_path.unlink()
+        # Zero key material (bytearray is mutable — this actually overwrites memory)
+        for i in range(len(key_bytes)):
+            key_bytes[i] = 0
+
+        # Clean up FIFO
+        if os.path.exists(fifo_path):
+            os.unlink(fifo_path)
+        if os.path.exists(fifo_dir):
+            os.rmdir(fifo_dir)
+
+
+# --- Cached age check (avoids 200+ PATH lookups during rotation) ---
+_age_checked: bool = False
+
+
+def _check_age_cached() -> None:
+    """Check age is installed, cached after first call."""
+    global _age_checked
+    if not _age_checked:
+        check_age_installed()
+        _age_checked = True
 
 
 class EnvelopeEncryptor:
@@ -450,13 +448,19 @@ class EnvelopeEncryptor:
         # Retrieve private key on-demand from configured source
         private_key = _resolve_private_key(tier_keys.private_key_source)
 
-        # Decrypt DEK with private key (asymmetric)
-        encrypted_dek = bytes.fromhex(header.encrypted_dek_hex)
+        # Validate encrypted DEK hex before passing to age
         try:
-            dek = decrypt_dek_with_privkey(encrypted_dek, private_key)
-        finally:
-            # Zero the private key from memory (best effort in Python)
-            private_key = "\x00" * len(private_key)  # noqa: F841
+            encrypted_dek = bytes.fromhex(header.encrypted_dek_hex)
+        except ValueError:
+            raise EncryptionError("Invalid encrypted DEK format in envelope header")
+
+        if not encrypted_dek or len(encrypted_dek) < 50:
+            raise EncryptionError("Encrypted DEK too short — corrupted envelope header")
+
+        # Decrypt DEK with private key (asymmetric)
+        # Private key is passed to decrypt_dek_with_privkey which handles
+        # zeroing via bytearray internally
+        dek = decrypt_dek_with_privkey(encrypted_dek, private_key)
 
         return dek
 
