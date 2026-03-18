@@ -582,20 +582,87 @@ Each tier has independent keypairs. Each artifact gets a unique 256-bit DEK. Com
 
 ## Audit Logging
 
-Disabled by default. Enable with `"audit_log": true` in config.
+**Disabled by default.** Engram is a compression tool first. Logging is opt-in for users who need it.
+
+Enable with `"audit_log": true` in config. For PQ-encrypted syslog forwarding, see [Secure Syslog](#secure-syslog-pq-encrypted) below.
+
+### Why disabled by default
+
+Engram's primary job is compression + indexing. Most users don't need audit logs. Logging creates data that must itself be secured — an audit log of encryption operations is itself sensitive metadata. If you don't need it, don't enable it. If you do need it, it's built to SIEM-grade standards.
+
+### Verbose logging mode
+
+For organizations with compliance requirements (SOC 2, HIPAA, GDPR Article 30, PCI-DSS), a more verbose logging mode is available:
+
+```json
+{
+  "audit_log": true,
+  "audit_verbose": true
+}
+```
+
+Verbose mode adds: operation durations, tier transition details, search hit counts with tier breakdown, key rotation events with generation IDs, and lock/unlock session boundaries. It does NOT add file paths, content, query strings, or key material — the PII/secret gate still applies.
+
+**Enabling verbose logging is your decision based on your compliance posture.** Engram provides the knobs; you own the architecture. Setting up log forwarders, configuring SIEM ingestion, sizing storage, defining retention policies, and building detection rules is your responsibility. Every environment is different — a single-user laptop and a 500-seat enterprise have fundamentally different logging needs.
+
+### Secure the full log path
+
+If you enable verbose logging and forward to a SIEM, **every layer the log data passes through must be secured independently:**
+
+1. **At source** — Engram encrypts log entries individually via the Rust sidecar (ML-KEM-768 + AES-256-GCM). This is handled for you.
+2. **In transit** — Use PQ-safe transport where available. TLS 1.3 with ML-KEM key agreement is supported by some forwarders. If your forwarder only supports classical TLS, the per-entry PQ encryption from step 1 still protects content — but the metadata envelope (timestamps, source IP, syslog headers) is only classically protected. Evaluate whether that's acceptable for your threat model.
+3. **At the SIEM** — Entries arrive PQ-encrypted. Storage encryption (dm-crypt, BitLocker, cloud KMS) adds defense in depth. Ensure the SIEM's own access controls, retention policies, and index encryption meet your compliance bar.
+4. **At the analyst workstation** — Decryption requires the `index` tier private key from the OS credential vault. Ensure workstations enforce full-disk encryption, credential store protections, and session timeouts.
+5. **In backups and archives** — Encrypted log entries stay encrypted in backups. But verify that your backup pipeline doesn't decrypt-then-re-encrypt with weaker algorithms, and that backup access controls match production.
+
+PQ cryptography (ML-KEM-768, FIPS 203) is used at every Engram-controlled layer. For layers outside Engram's control (your network, your SIEM, your backup system), adopt PQC where your infrastructure supports it. The base cryptographic code is all here in the sidecar — no external crypto dependencies are introduced.
+
+### Third-party risk
+
+Engram deliberately avoids introducing third-party dependencies into the logging and forwarding path. The sidecar handles all cryptographic operations using vendored Rust crates that are compiled into the binary. No runtime calls to external services, no telemetry, no phone-home behavior.
+
+If you integrate with external forwarders (Filebeat, Splunk Universal Forwarder, Fluentd, etc.), **you are introducing their dependency and trust chain into your logging path.** Before deploying any forwarder:
+
+- Vet the forwarder's own dependencies and update cadence
+- Disable all telemetry, analytics, and phone-home features. Most forwarders ship with these enabled by default. Cutting outbound network calls to vendor endpoints is table stakes
+- Pin forwarder versions and verify checksums
+- Run the forwarder with minimal permissions (read-only on the encrypted log file, network access only to your SIEM endpoint)
+- Audit the forwarder's own logging — some forwarders log the content they forward in plaintext to their own debug logs
+
+No third-party component should be trusted by default. If it hasn't been fully vetted with controls like network phone-home specifically disabled, it doesn't belong in your logging pipeline.
+
+### The security double-edged sword
+
+More logging is not unconditionally better. This is security's classic double-edged sword:
+
+**Pros of verbose logging:**
+- Stronger audit trail for compliance and incident response
+- Faster detection of anomalous access patterns
+- Evidence for forensic reconstruction after a breach
+- Satisfies regulatory requirements that mandate detailed access records
+
+**Cons of verbose logging:**
+- More metadata to protect — a detailed audit log is itself a high-value target. An attacker who compromises your SIEM learns exactly what was accessed, when, and how often
+- Larger attack surface — every forwarder, every transport hop, every SIEM ingestion point is a potential interception or injection vector
+- Storage and retention burden — verbose logs grow fast. Retention policies become compliance obligations, not just housekeeping
+- False sense of security — logging that nobody monitors is worse than no logging, because it creates the impression of oversight without the reality
+
+Know your compliance policy. Some frameworks (HIPAA, PCI-DSS, FedRAMP) mandate specific log verbosity, retention windows, and access audit granularity that go beyond what the default mode provides. Read your controls matrix. If it requires more verbose logging, more granular event capture, or domain-specific fields — you build it. That's the beauty of AI plugins: they're modular like Legos. Engram gives you the base audit engine, the PQ-encrypted transport, and the PII/secret gate. You snap on the logging verbosity, the forwarder config, the SIEM integration, and the retention policy that your compliance posture demands. The plugin architecture means you extend without forking. Your compliance module is yours; the core engine stays clean.
+
+Secure every layer it touches. Monitor what you collect. Delete what you no longer need.
 
 ### What's logged
 
 ```
-1710720000 TIER hot>warm 9.4x abc7f2
-1710720001 TIER warm>cold 11.2x d4e891
-1710730000 RECALL cold abc7f2
-1710730001 DECRYPT warm abc7f2 ok
-1710740000 SEARCH 5hits
-1710750000 ROTATE warm gen1>gen2 37headers
+2026-03-18T11:05:00Z TIER hot>warm 9.4x abc7f2
+2026-03-18T11:05:01Z TIER warm>cold 11.2x d4e891
+2026-03-18T12:30:00Z RECALL cold abc7f2
+2026-03-18T12:30:01Z DECRYPT warm abc7f2 ok
+2026-03-18T14:00:00Z SEARCH 5hits
+2026-03-18T15:00:00Z ROTATE warm gen1>gen2 37headers
 ```
 
-Timestamp, operation, tier, 6-char artifact hash, outcome. That's it.
+Timestamp (ISO 8601 UTC), operation, tier, 6-char artifact hash, outcome. That's it.
 
 ### What's NOT logged
 
@@ -605,16 +672,13 @@ File paths, filenames, key sources, query strings, content, keywords, summaries,
 
 Every log line passes through regex-based detection before writing. If a line matches any pattern, it's replaced with `REDACTED`:
 
-- `AGE-SECRET-KEY-*` — legacy age private keys
-- `age1*` — legacy age public keys
 - `-----BEGIN * KEY-----` — PEM keys
 - `ssh-(rsa|ed25519) *` — SSH keys
 - `AKIA*` — AWS access keys
-- `sk-*` — API keys
+- `sk-*` — API keys (OpenAI, Anthropic)
 - `ghp_*` — GitHub tokens
 - `*@*.*` — Email addresses
-- `/Users/*/` — macOS home paths
-- `/home/*/` — Linux home paths
+- `/Users/*/`, `/home/*/` — Home paths (PII)
 - `password|secret|token|credential` — Secret keywords
 
 ### Size cap
@@ -623,7 +687,55 @@ Every log line passes through regex-based detection before writing. If a line ma
 
 ### Encrypted at rest
 
-When `engram lock` runs, the audit log is included in the encrypted index bundle. Only encrypted .encf files remain on disk.
+When `engram lock` runs, the audit log is included in the encrypted index bundle (ML-KEM-768 + AES-256-GCM via sidecar). Only encrypted .encf files remain on disk.
+
+### Secure Syslog (PQ-encrypted)
+
+For users who need centralized log collection (SOC teams, compliance, shared servers), Engram supports encrypted syslog forwarding. Audit events can be written to an encrypted log file that is periodically forwarded to your SIEM.
+
+**How it works:**
+
+```
+Audit event
+    |
+    v
+PII/secret gate (regex filter)
+    |
+    v
+Plaintext log line
+    |
+    +---> audit.log (local, 0600, encrypted at rest via engram lock)
+    |
+    +---> audit.encf.log (PQ-encrypted append log via sidecar)
+          |
+          v
+       Forward to SIEM (Splunk, QRadar, Elastic, etc.)
+       via syslog, filebeat, or splunk-forwarder
+```
+
+Enable in config:
+
+```json
+{
+  "audit_log": true,
+  "audit_syslog": {
+    "enabled": true,
+    "tier": "index",
+    "format": "json"
+  }
+}
+```
+
+Each log entry is individually encrypted with the `index` tier key via the sidecar. This means:
+
+- **In transit**: Log entries are PQ-encrypted (ML-KEM-768 + AES-256-GCM). Even if the syslog transport is compromised, the content is protected.
+- **At rest on the SIEM**: Entries remain encrypted. Decryption requires the `index` tier private key from the OS credential vault.
+- **Harvest-now-decrypt-later**: PQ encryption protects against future quantum attacks on archived logs.
+- **No plaintext on the wire**: Unlike standard syslog (RFC 5424) which transmits plaintext or relies on TLS (classical crypto), each individual log entry is independently encrypted with NIST-approved PQ algorithms.
+
+The SIEM stores encrypted blobs. To search them, use `engram search` locally (the semantic index is always available). To decrypt individual entries for incident response, use the sidecar with the `index` tier key.
+
+This is the same architecture used in enterprise SIEMs that handle classified data: encrypt at the source, store encrypted, decrypt only at the analyst's workstation with proper key access.
 
 ---
 
