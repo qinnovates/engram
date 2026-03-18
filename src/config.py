@@ -115,21 +115,37 @@ class ScanTarget:
 
 @dataclass
 class EncryptionConfig:
-    """Optional PQKC encryption via age (ML-KEM-768 hybrid)."""
+    """Optional PQKC encryption via age (ML-KEM-768 hybrid).
+
+    Two modes:
+      SIMPLE (default): Single recipient key for all tiers.
+        Set recipient_pubkey + identity_path.
+
+      ENVELOPE: Per-tier keypairs with per-artifact DEK isolation.
+        Set envelope_mode=True + warm/cold/frozen pubkeys and private
+        key sources. Each artifact gets a unique 256-bit DEK encrypted
+        with the tier's public key. Compromise one artifact = only that
+        artifact exposed. Compromise warm key = cold/frozen still safe.
+        Key rotation re-wraps DEK headers in O(metadata), not O(data).
+    """
     enabled: bool = False
-    # Path to age recipient public key (age1... or SSH pubkey)
+    # --- Simple mode fields ---
     recipient_pubkey: Optional[str] = None
-    # Path to age identity (private key) for decryption
     identity_path: Optional[str] = None
-    # If True, encrypts AFTER compression (compress-then-encrypt)
     encrypt_after_compress: bool = True
-    # Encrypt hot tier artifacts at rest. Disabled by default because it
-    # adds a decryption step (Touch ID / vault access) on every file read.
-    # Enable if your threat model requires all data encrypted at rest,
-    # including active session files. Performance cost: ~1-2s per recall
-    # (biometric prompt). Most users don't need this — warm/cold/frozen
-    # encryption covers old sessions where the real risk is.
     encrypt_hot: bool = False
+    # --- Envelope mode fields ---
+    envelope_mode: bool = False
+    # Per-tier public keys (safe in config)
+    warm_pubkey: Optional[str] = None
+    cold_pubkey: Optional[str] = None
+    frozen_pubkey: Optional[str] = None
+    # Per-tier private key sources (keychain:, command:, env:)
+    warm_private_source: Optional[str] = None
+    cold_private_source: Optional[str] = None
+    frozen_private_source: Optional[str] = None
+    # Key generation counter (for rotation tracking)
+    key_generation: int = 1
 
 
 @dataclass
@@ -330,7 +346,10 @@ class EngineConfig:
 
         known_enc_fields = {
             "enabled", "recipient_pubkey", "identity_path", "encrypt_after_compress",
-            "encrypt_hot",
+            "encrypt_hot", "envelope_mode",
+            "warm_pubkey", "cold_pubkey", "frozen_pubkey",
+            "warm_private_source", "cold_private_source", "frozen_private_source",
+            "key_generation",
         }
         enc_data = {k: v for k, v in data.get("encryption", {}).items()
                     if k in known_enc_fields}

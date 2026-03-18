@@ -153,16 +153,30 @@ class TieringEngine:
         if self._audit:
             getattr(self._audit, method)(**kwargs)
 
-    def _encrypt_if_enabled(self, compressed_path: Path) -> tuple[Path, bool]:
+    def _encrypt_if_enabled(self, compressed_path: Path,
+                            tier: str = "warm") -> tuple[Path, bool]:
         """Encrypt a compressed file if encryption is configured.
 
+        Supports two modes:
+          SIMPLE: whole-file encryption with single recipient key.
+          ENVELOPE: per-artifact DEK encrypted with tier's public key.
+            Stores .envelope.json header alongside the encrypted file.
+
         Returns (final_path, was_encrypted). Cleans up on failure.
-        Shared by _tier_to_warm, _tier_to_cold, _tier_to_frozen.
         """
-        if not (self.config.encryption.enabled
-                and self.config.encryption.recipient_pubkey):
+        enc = self.config.encryption
+        if not enc.enabled:
             return compressed_path, False
 
+        if enc.envelope_mode:
+            return self._encrypt_envelope(compressed_path, tier)
+        elif enc.recipient_pubkey:
+            return self._encrypt_simple(compressed_path)
+        else:
+            return compressed_path, False
+
+    def _encrypt_simple(self, compressed_path: Path) -> tuple[Path, bool]:
+        """Simple mode: whole-file age encryption with single key."""
         try:
             from .encryption import encrypt_file
             encrypted_path = encrypt_file(compressed_path, self.config.encryption)
@@ -175,6 +189,124 @@ class TieringEngine:
             if enc_candidate.exists():
                 enc_candidate.unlink()
             raise
+
+    def _encrypt_envelope(self, compressed_path: Path,
+                          tier: str) -> tuple[Path, bool]:
+        """Envelope mode: per-artifact DEK encrypted with tier's public key.
+
+        Each artifact gets a unique 256-bit DEK. The DEK is encrypted
+        asymmetrically with the tier's public key and stored in an
+        .envelope.json header. The data is encrypted with age using
+        the tier's public key (age handles the symmetric data encryption
+        internally via ChaCha20-Poly1305).
+        """
+        from .envelope import (
+            EnvelopeEncryptor, AsymmetricKeyConfig, TierKeyPair,
+            ENVELOPE_HEADER_EXT,
+        )
+
+        # Build tier key config from EncryptionConfig fields
+        enc = self.config.encryption
+        pubkey_map = {
+            "warm": enc.warm_pubkey,
+            "cold": enc.cold_pubkey,
+            "frozen": enc.frozen_pubkey,
+        }
+        source_map = {
+            "warm": enc.warm_private_source,
+            "cold": enc.cold_private_source,
+            "frozen": enc.frozen_private_source,
+        }
+
+        tier_pubkey = pubkey_map.get(tier)
+        if not tier_pubkey:
+            return compressed_path, False
+
+        # Create envelope (generates DEK, encrypts DEK with tier pubkey)
+        key_config = AsymmetricKeyConfig(
+            enabled=True,
+            warm=TierKeyPair(
+                pubkey=pubkey_map.get("warm", "") or "",
+                private_key_source=source_map.get("warm", "") or "",
+            ),
+            cold=TierKeyPair(
+                pubkey=pubkey_map.get("cold", "") or "",
+                private_key_source=source_map.get("cold", "") or "",
+            ),
+            key_generation=enc.key_generation,
+        )
+        encryptor = EnvelopeEncryptor(key_config)
+        header, dek = encryptor.create_envelope(compressed_path, tier)
+
+        # Encrypt the data file with the tier's public key via age
+        from .encryption import encrypt_file, EncryptionConfig as SimpleEnc
+        simple_cfg = SimpleEnc(enabled=True, recipient_pubkey=tier_pubkey)
+        try:
+            encrypted_path = encrypt_file(compressed_path, simple_cfg)
+            compressed_path.unlink()
+
+            # Store envelope header alongside encrypted file
+            header_path = encrypted_path.with_suffix(
+                encrypted_path.suffix + ENVELOPE_HEADER_EXT
+            )
+            from .fileutil import atomic_write_text
+            atomic_write_text(header_path, header.to_json())
+
+            return encrypted_path, True
+        except (OSError, subprocess.SubprocessError, EncryptionError):
+            enc_candidate = compressed_path.with_suffix(
+                compressed_path.suffix + ".age"
+            )
+            if enc_candidate.exists():
+                enc_candidate.unlink()
+            raise
+
+    def _decrypt_envelope(self, encrypted_path: Path, tier: str,
+                          original_path: Path) -> Path:
+        """Decrypt an envelope-encrypted artifact using the tier's private key.
+
+        Reads the .envelope.json header, resolves the tier's private key
+        from the configured source (Keychain, Vault, env), and decrypts.
+        """
+        from .encryption import decrypt_file, EncryptionConfig as SimpleEnc
+
+        enc = self.config.encryption
+        source_map = {
+            "warm": enc.warm_private_source,
+            "cold": enc.cold_private_source,
+            "frozen": enc.frozen_private_source,
+        }
+
+        private_source = source_map.get(tier)
+        if not private_source:
+            raise DecryptionRequiredError(
+                f"No private key source configured for {tier} tier. "
+                f"Set {tier}_private_source in encryption config.",
+                tier=tier, path=str(original_path),
+            )
+
+        # Resolve the private key from the configured source
+        from .envelope import _resolve_private_key
+        private_key = _resolve_private_key(private_source)
+
+        # Write identity to temp for age -d -i (needed for simple decrypt_file)
+        import tempfile
+        key_fd, key_path = tempfile.mkstemp(prefix="engram-", suffix=".key")
+        try:
+            import os
+            with os.fdopen(key_fd, "w") as f:
+                f.write(private_key)
+            os.chmod(key_path, 0o600)
+
+            # Decrypt using the tier-specific identity
+            cfg = SimpleEnc(enabled=True, identity_path=key_path)
+            return decrypt_file(encrypted_path, cfg)
+        finally:
+            # Zero and delete the temp key file
+            key_p = Path(key_path)
+            if key_p.exists():
+                key_p.write_bytes(b"\x00" * 256)
+                key_p.unlink()
 
     def scan(self) -> list[Path]:
         """
@@ -329,7 +461,7 @@ class TieringEngine:
             src.unlink()
 
         compressed_path = result.output_path
-        compressed_path, encrypted = self._encrypt_if_enabled(compressed_path)
+        compressed_path, encrypted = self._encrypt_if_enabled(compressed_path, tier="warm")
 
         action.new_size = compressed_path.stat().st_size
         action.ratio = result.ratio
@@ -406,7 +538,7 @@ class TieringEngine:
             raw_path.unlink()
 
         final_path = result.output_path
-        final_path, encrypted = self._encrypt_if_enabled(final_path)
+        final_path, encrypted = self._encrypt_if_enabled(final_path, tier="cold")
 
         action.new_size = final_path.stat().st_size
         action.ratio = result.ratio
@@ -486,7 +618,7 @@ class TieringEngine:
             raw_path.unlink()
 
         final_path = result.output_path
-        final_path, encrypted = self._encrypt_if_enabled(final_path)
+        final_path, encrypted = self._encrypt_if_enabled(final_path, tier="frozen")
 
         action.new_size = final_path.stat().st_size
         action.ratio = result.ratio
@@ -570,9 +702,18 @@ class TieringEngine:
                     f"tier private key to recall this artifact.",
                     tier=meta.tier, path=str(original_path),
                 )
+
+            enc = self.config.encryption
             try:
-                from .encryption import decrypt_file
-                working_path = decrypt_file(compressed, self.config.encryption)
+                if enc.envelope_mode:
+                    # Envelope mode: use tier-specific private key source
+                    working_path = self._decrypt_envelope(
+                        compressed, meta.tier, original_path
+                    )
+                else:
+                    # Simple mode: use single identity path
+                    from .encryption import decrypt_file
+                    working_path = decrypt_file(compressed, enc)
             except (OSError, subprocess.SubprocessError, EncryptionError) as e:
                 raise DecryptionRequiredError(
                     f"Failed to decrypt {meta.tier}-tier artifact: {original_path}. "

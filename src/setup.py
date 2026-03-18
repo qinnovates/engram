@@ -208,6 +208,7 @@ def run_guided_setup(config_path: Path) -> EngineConfig:
     )
 
     encrypt_hot = False
+    use_envelope = False
     if encryption_enabled:
         print()
         print("  Encryption enabled. Run `engram encrypt-setup` after init")
@@ -229,11 +230,27 @@ def run_guided_setup(config_path: Path) -> EngineConfig:
         else:
             print("    Standard: hot stays plaintext. Old sessions encrypted when tiered.")
 
+        # Envelope mode
+        print()
+        print("  Encryption architecture:")
+        print("    [simple]   One key for all tiers (easier setup)")
+        print("    [envelope] Per-tier keypairs with per-artifact keys")
+        print("               (most secure — compromise one tier, others safe)")
+        print()
+        envelope_choice = _input_choice(
+            "  Choose [simple/envelope]: ", ["simple", "envelope"], default="simple"
+        )
+        use_envelope = envelope_choice == "envelope"
+        if use_envelope:
+            print("    Envelope mode: each tier gets its own keypair.")
+            print("    Run `engram encrypt-setup` to generate per-tier keys.")
+
     # Step 6: Save
     from .config import EncryptionConfig
     enc_config = EncryptionConfig(
         enabled=encryption_enabled,
         encrypt_hot=encrypt_hot,
+        envelope_mode=use_envelope if encryption_enabled else False,
     )
     config = EngineConfig(
         scan_targets=selected_targets,
