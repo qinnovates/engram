@@ -216,14 +216,18 @@ def run_guided_setup(config_path: Path) -> EngineConfig:
         print("  By default, only warm/cold/frozen tiers are encrypted.")
         print("  Hot tier (active session files) stays plaintext for fast access.")
         print()
+        print("  For the most secure setup, you can also encrypt hot storage.")
+        print("  This encrypts everything, including your most recent sessions")
+        print("  that haven't been compressed yet. Requires Touch ID on every read.")
+        print()
         encrypt_hot = _input_yn(
-            "  Also encrypt hot tier? (slower — requires Touch ID on every read)",
+            "  Enable most secure mode (encrypt all tiers including hot)?",
             default=False,
         )
         if encrypt_hot:
-            print("    All tiers will be encrypted at rest.")
+            print("    Most secure: all data encrypted at rest, all tiers.")
         else:
-            print("    Hot stays plaintext. Old sessions encrypted when tiered.")
+            print("    Standard: hot stays plaintext. Old sessions encrypted when tiered.")
 
     # Step 6: Save
     from .config import EncryptionConfig
