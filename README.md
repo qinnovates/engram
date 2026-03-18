@@ -457,11 +457,15 @@ engram recall ~/.claude/subagents/session-2024-05-12.jsonl
 
 | Assistant | Auto-detected Artifacts |
 |-----------|------------------------|
-| Claude Code | `~/.claude/subagents/*.jsonl`, project memory, todos, history |
+| Claude Code | 18 locations: session logs, subagent outputs, memory, debug, plans, tasks, history |
 | ChatGPT | Desktop app cache |
 | Cursor | Conversation logs |
 | GitHub Copilot | Configuration cache |
-| Custom | Add any path to `config.json` |
+| OpenAI Codex | Add Codex working directory to `config.json` |
+| OpenClaw | Add memory/session directories to `config.json` |
+| Any AI tool | Add any path — if it writes files, Engram can compress and encrypt them |
+
+Any AI assistant can set up Engram from this repo. Claude, Codex, Copilot, ChatGPT — the README and interactive installer are designed so the AI reads the docs and walks you through it. No vendor lock-in at any layer.
 
 ## Plugin architecture
 
