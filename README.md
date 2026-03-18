@@ -515,7 +515,9 @@ pytest tests/ -v
 
 ## Disclaimer
 
-**This software handles your data.** Engram compresses and optionally encrypts AI session logs, memory files, and conversation history. While it has been security-reviewed (4 rounds, 3 independent red-team personas), it is provided as-is under the MIT license with no warranty.
+**This software handles your data locally. Nothing leaves your machine.** Engram compresses and optionally encrypts AI session logs, memory files, and conversation history. All processing happens on your local filesystem. No data is sent to any server, API, cloud service, or third party. There is no telemetry, no analytics, no phone-home. Your memories stay yours.
+
+While it has been security-reviewed (4 rounds, 3 independent red-team personas), it is provided as-is under the MIT license with no warranty.
 
 **Before using in production:**
 - Run `engram run --dry-run` first to preview changes without modifying files
