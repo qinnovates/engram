@@ -1,7 +1,7 @@
 {
   "name": "engram",
   "description": "Extends AI context windows through automatic tiered compression with optional post-quantum encryption (ML-KEM-768). Brain-inspired hot/warm/cold/frozen storage with semantic indexing and progressive recall.",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": {
     "name": "Kevin Qi",
     "url": "https://github.com/qinnovates"

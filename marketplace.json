@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Brain-inspired tiered memory compression that extends AI context windows 3-4x with optional post-quantum encryption. Automatic hot/warm/cold/frozen storage tiers, semantic indexing for instant search, progressive recall, and per-artifact envelope encryption using ML-KEM-768 (NIST FIPS 203).",
-    "version": "0.1.0",
+    "version": "1.0.0",
     "repository": "https://github.com/qinnovates/engram",
     "license": "MIT",
     "categories": [

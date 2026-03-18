@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "engram"
-version = "0.1.0"
+version = "1.0.0"
 description = "Brain-inspired AI memory compression with optional post-quantum encryption. Extends context windows 3-50x through tiered storage and semantic indexing."
 readme = "README.md"
 license = {text = "MIT"}
@@ -17,7 +17,7 @@ keywords = [
     "context-window", "tiered-storage", "zstd", "parquet", "ml-kem-768",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
