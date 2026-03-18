@@ -20,29 +20,33 @@ from pathlib import Path
 from .config import EngineConfig
 from .engine import TieringEngine
 from .encryption import check_age_installed, AgeNotFoundError
+from .setup import run_guided_setup, run_interactive_setup
 
 
 DEFAULT_CONFIG = "~/.engram/config.json"
 
 
 def cmd_init(args: argparse.Namespace) -> None:
-    """Initialize configuration with defaults."""
+    """Initialize configuration — guided or interactive setup."""
     config_path = Path(args.config).expanduser()
     if config_path.exists() and not args.force:
         print(f"Config already exists: {config_path}")
         print("Use --force to overwrite.")
         return
 
-    config = EngineConfig()
-    config.scan_targets = EngineConfig.default_claude_targets()
-    config.save(config_path)
-    print(f"Config initialized: {config_path}")
-    print(f"Scan targets: {len(config.scan_targets)}")
-    for t in config.scan_targets:
-        print(f"  - {t.path}/{t.pattern} ({t.description})")
-    print()
-    print("Edit the config to add custom scan targets or enable encryption.")
-    print(f"  {config_path}")
+    mode = getattr(args, "mode", "guided")
+
+    if mode == "interactive":
+        run_interactive_setup(config_path)
+    elif mode == "auto":
+        # Silent mode — no prompts, use all defaults
+        config = EngineConfig()
+        config.scan_targets = EngineConfig.default_claude_targets()
+        config.save(config_path)
+        print(f"Config initialized: {config_path}")
+        print(f"Scan targets: {len(config.scan_targets)}")
+    else:
+        run_guided_setup(config_path)
 
 
 def cmd_scan(args: argparse.Namespace) -> None:
@@ -220,8 +224,12 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     # init
-    p_init = sub.add_parser("init", help="Initialize config with defaults")
-    p_init.add_argument("--force", action="store_true")
+    p_init = sub.add_parser("init", help="Initialize config (guided, interactive, or auto)")
+    p_init.add_argument("--force", action="store_true",
+                        help="Overwrite existing config")
+    p_init.add_argument("--mode", choices=["guided", "interactive", "auto"],
+                        default="guided",
+                        help="Setup mode: guided (recommended), interactive (pick locations), auto (no prompts)")
 
     # scan
     sub.add_parser("scan", help="Scan for artifacts without tiering")
