@@ -8,6 +8,8 @@ Usage:
   engram recall <file> [--config PATH]
   engram init [--config PATH]
   engram scan [--config PATH]
+  engram reindex [--config PATH]
+  engram verify [--config PATH]
   engram encrypt-setup
 """
 
@@ -166,6 +168,77 @@ def cmd_search(args: argparse.Namespace) -> None:
             print(f"     Keywords: {', '.join(entry.keywords[:8])}")
 
 
+def cmd_reindex(args: argparse.Namespace) -> None:
+    """Rebuild the semantic index from scratch."""
+    config = EngineConfig.load(args.config)
+    config.verbose = args.verbose
+    engine = TieringEngine(config)
+
+    # Delete the existing semantic index
+    index_path = engine.index.index_path
+    if index_path.exists():
+        index_path.unlink()
+        print(f"Deleted existing index: {index_path}")
+    else:
+        print("No existing index found.")
+
+    # Reload the index (now empty) and rebuild
+    from .context import SemanticIndex
+    engine.index = SemanticIndex(config.resolve_metadata_dir())
+
+    discovered = engine.scan()
+    engine.register_all(discovered)
+
+    entries = engine.index.all_entries()
+    print(f"Reindexed {len(entries)} artifacts.")
+
+
+def cmd_verify(args: argparse.Namespace) -> None:
+    """Verify SHA-256 integrity of all tracked artifacts."""
+    from .metadata import compute_sha256
+
+    config = EngineConfig.load(args.config)
+    engine = TieringEngine(config)
+
+    artifacts = engine.metadata.all_artifacts()
+    total = len(artifacts)
+    passed = 0
+    failed = 0
+    skipped = 0
+    failures: list[tuple[str, str, str]] = []
+
+    for meta in artifacts:
+        if not meta.sha256:
+            skipped += 1
+            continue
+
+        path = Path(meta.path)
+        if not path.exists():
+            failed += 1
+            failures.append((meta.path, meta.sha256[:16], "file missing"))
+            continue
+
+        current_hash = compute_sha256(path)
+        if current_hash == meta.sha256:
+            passed += 1
+        else:
+            failed += 1
+            failures.append((meta.path, meta.sha256[:16], f"got {current_hash[:16]}"))
+
+    print("Integrity Verification")
+    print("=" * 40)
+    print(f"Total checked:  {total}")
+    print(f"  Passed:       {passed}")
+    print(f"  Failed:       {failed}")
+    print(f"  Skipped:      {skipped}  (no hash stored)")
+
+    if failures:
+        print(f"\nFailed artifacts:")
+        for path, expected, actual in failures:
+            print(f"  {path}")
+            print(f"    expected: {expected}...  {actual}")
+
+
 def cmd_encrypt_setup(_args: argparse.Namespace) -> None:
     """Guide user through encryption setup."""
     print("=" * 60)
@@ -261,6 +334,12 @@ def main() -> None:
     p_search.add_argument("--limit", "-l", type=int, default=10,
                           help="Max results (default: 10)")
 
+    # reindex
+    sub.add_parser("reindex", help="Rebuild semantic index from scratch")
+
+    # verify
+    sub.add_parser("verify", help="Verify SHA-256 integrity of tracked artifacts")
+
     # encrypt-setup
     sub.add_parser("encrypt-setup", help="Guide through encryption setup")
 
@@ -274,6 +353,8 @@ def main() -> None:
         "recall": cmd_recall,
         "context": cmd_context,
         "search": cmd_search,
+        "reindex": cmd_reindex,
+        "verify": cmd_verify,
         "encrypt-setup": cmd_encrypt_setup,
     }
 
