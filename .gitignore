@@ -34,6 +34,9 @@ config.json
 .vscode/
 .idea/
 
+# Rust build artifacts (sidecar)
+sidecar/target/
+
 # Local memory / session state
 _memory/
 
