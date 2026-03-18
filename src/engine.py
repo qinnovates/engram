@@ -18,6 +18,7 @@ Access-based promotion (cold -> hot on read):
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -321,16 +322,16 @@ class TieringEngine:
         # Use FIFO (named pipe) — private key NEVER touches disk as a file.
         # Same approach as envelope.py:decrypt_dek_with_privkey.
         import os
+        import tempfile
         import threading
-        engram_dir = self.config.resolve_metadata_dir()
-        fifo_dir = os.path.join(str(engram_dir), ".fifo-tmp")
-        os.makedirs(fifo_dir, mode=0o700, exist_ok=True)
+
+        # Per-call temp dir for FIFO — prevents reuse across concurrent calls
+        fifo_dir = tempfile.mkdtemp(prefix="engram-fifo-", dir=str(self.config.resolve_metadata_dir()))
+        os.chmod(fifo_dir, 0o700)
         fifo_path = os.path.join(fifo_dir, "identity")
 
         key_bytes = bytearray(private_key.encode("utf-8"))
         try:
-            if os.path.exists(fifo_path):
-                os.unlink(fifo_path)
             os.mkfifo(fifo_path, mode=0o600)
 
             # age reads the identity from the FIFO
@@ -359,8 +360,9 @@ class TieringEngine:
             # Zero key material
             for i in range(len(key_bytes)):
                 key_bytes[i] = 0
-            if os.path.exists(fifo_path):
-                os.unlink(fifo_path)
+            # Clean up FIFO dir completely
+            import shutil
+            shutil.rmtree(fifo_dir, ignore_errors=True)
 
     def scan(self) -> list[Path]:
         """
@@ -653,6 +655,7 @@ class TieringEngine:
         # Write raw content to temp for frozen pipeline input
         import tempfile
         raw_fd, raw_str = tempfile.mkstemp(suffix=".jsonl", prefix="engram-")
+        os.chmod(raw_str, 0o600)  # SECURITY: restrict before writing plaintext
         raw_path = Path(raw_str)
         with open(raw_fd, "wb") as f:
             f.write(raw_bytes)
@@ -773,7 +776,7 @@ class TieringEngine:
                     f"Failed to decrypt {meta.tier}-tier artifact: {original_path}. "
                     f"Check that the correct private key is accessible. "
                     f"For Keychain: ensure Touch ID is available. "
-                    f"For Vault/KMS: ensure credentials are valid. Error: {e}",
+                    f"For Vault/KMS: ensure credentials are valid. Error: {type(e).__name__}",
                     tier=meta.tier, path=str(original_path),
                 ) from e
 
@@ -783,7 +786,7 @@ class TieringEngine:
         except (OSError, zstd.ZstdError) as e:
             raise DecompressionError(
                 f"Failed to decompress {meta.tier}-tier artifact: {original_path}. "
-                f"The compressed file may be corrupted. Error: {e}",
+                f"The compressed file may be corrupted. Error: {type(e).__name__}",
                 tier=meta.tier, path=str(original_path),
             ) from e
 

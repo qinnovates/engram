@@ -42,11 +42,11 @@ def atomic_write_text(path: Path, content: str,
     fd, tmp_str = tempfile.mkstemp(
         suffix=".tmp", dir=str(path.parent), prefix=".engram-"
     )
+    os.fchmod(fd, permissions)  # SECURITY: restrict BEFORE writing content
     tmp = Path(tmp_str)
     try:
         with os.fdopen(fd, "w") as f:
             f.write(content)
-        os.chmod(str(tmp), permissions)
         tmp.rename(path)
     except Exception:
         if tmp.exists():
@@ -62,11 +62,11 @@ def atomic_write_bytes(path: Path, content: bytes,
     fd, tmp_str = tempfile.mkstemp(
         suffix=".tmp", dir=str(path.parent), prefix=".engram-"
     )
+    os.fchmod(fd, permissions)  # SECURITY: restrict BEFORE writing content
     tmp = Path(tmp_str)
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(content)
-        os.chmod(str(tmp), permissions)
         tmp.rename(path)
     except Exception:
         if tmp.exists():

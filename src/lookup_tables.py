@@ -498,7 +498,7 @@ class PQCodebook:
         if path is None:
             path = os.path.join(os.path.expanduser("~"), ".engram", "index", "pq-codebook.npz")
 
-        data = np.load(path)
+        data = np.load(path, allow_pickle=False)  # SECURITY: CWE-502
         config = data["config"]
         dim, m, k = int(config[0]), int(config[1]), int(config[2])
 
