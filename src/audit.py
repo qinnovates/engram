@@ -87,8 +87,8 @@ _SECRET_PATTERNS = [
     re.compile(r'C:\\Users\\[a-zA-Z0-9._-]+\\'),                   # Windows home paths
 
     # Generic secret patterns
-    re.compile(r'password|passwd|secret|token|credential',
-               re.IGNORECASE),                                      # Secret keywords
+    re.compile(r'\b(password|passwd|secret|token|credential)\b',
+               re.IGNORECASE),                                      # Secret keywords (word-boundary)
     re.compile(r'[0-9a-f]{64,}'),                                   # Hex key material (64+ chars)
 ]
 
@@ -99,6 +99,9 @@ def _contains_secret(line: str) -> bool:
         if pattern.search(line):
             return True
     return False
+
+
+_VALID_SYSLOG_TIERS = frozenset({"index", "warm", "cold", "frozen"})
 
 
 class AuditLogger:
@@ -116,19 +119,29 @@ class AuditLogger:
         self._syslog_tier = (syslog_config or {}).get("tier", "index")
         self._syslog_format = (syslog_config or {}).get("format", "json")
         self._syslog_enabled = bool(syslog_config and syslog_config.get("enabled"))
+        self._syslog_error_reported = False
+        # Validate tier against allowlist — prevents protocol injection via config
+        if self._syslog_enabled and self._syslog_tier not in _VALID_SYSLOG_TIERS:
+            raise ValueError(
+                f"Invalid audit_syslog tier: {self._syslog_tier!r}. "
+                f"Must be one of: {sorted(_VALID_SYSLOG_TIERS)}"
+            )
         self._ensure_log()
 
     def _ensure_log(self) -> None:
-        """Create log file with restricted permissions if it doesn't exist."""
+        """Create log files with restricted permissions if they don't exist."""
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            fd = os.open(
-                str(self.log_path),
-                os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600,
-            )
-            os.close(fd)
-        except FileExistsError:
-            pass  # Already exists — no action needed
+        for path in [self.log_path, self._syslog_path]:
+            if path is None:
+                continue
+            try:
+                fd = os.open(
+                    str(path),
+                    os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600,
+                )
+                os.close(fd)
+            except FileExistsError:
+                pass  # Already exists — no action needed
 
     def _write(self, line: str, structured: Optional[dict] = None) -> None:
         """Append a line to the audit log. Blocks lines containing secrets/PII."""
@@ -140,7 +153,7 @@ class AuditLogger:
 
             if self.log_path.exists() and self.log_path.stat().st_size > MAX_AUDIT_BYTES:
                 return  # Log full — silently drop. User should rotate.
-            with open(self.log_path, "a") as f:
+            with open(self.log_path, "a", encoding="utf-8", errors="replace") as f:
                 f.write(line + "\n")
 
             # PQ-encrypted syslog output
@@ -174,7 +187,7 @@ class AuditLogger:
 
                 client = VaultClient()
                 try:
-                    client.encrypt(tmp_plain, tmp_enc, self._syslog_tier)
+                    client.encrypt(Path(tmp_plain), Path(tmp_enc), self._syslog_tier)
                 finally:
                     client.close()
 
@@ -183,15 +196,19 @@ class AuditLogger:
                     encrypted_hex = f.read().hex()
 
                 if self._syslog_path:
-                    with open(self._syslog_path, "a") as f:
+                    with open(self._syslog_path, "a", encoding="ascii") as f:
                         f.write(encrypted_hex + "\n")
             finally:
                 if os.path.exists(tmp_plain):
                     os.unlink(tmp_plain)
                 if os.path.exists(tmp_enc):
                     os.unlink(tmp_enc)
-        except Exception:
-            pass  # Syslog encryption must never break the operation
+        except Exception as exc:
+            # Emit a single warning on first failure so misconfiguration is visible
+            if not self._syslog_error_reported:
+                import sys
+                print(f"engram: syslog encryption failed: {exc}", file=sys.stderr)
+                self._syslog_error_reported = True
 
     def _ts(self) -> str:
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

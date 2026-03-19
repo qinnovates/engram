@@ -360,6 +360,21 @@ class EngineConfig:
                     if k in known_enc_fields}
         encryption = EncryptionConfig(**enc_data)
 
+        # Extract and validate audit_syslog — allowlist keys, validate tier
+        known_syslog_fields = {"enabled", "tier", "format"}
+        valid_syslog_tiers = {"index", "warm", "cold", "frozen"}
+        raw_syslog = data.get("audit_syslog")
+        audit_syslog = None
+        if isinstance(raw_syslog, dict):
+            audit_syslog = {k: v for k, v in raw_syslog.items()
+                           if k in known_syslog_fields}
+            tier_val = audit_syslog.get("tier", "index")
+            if tier_val not in valid_syslog_tiers:
+                raise ValueError(
+                    f"Invalid audit_syslog.tier: {tier_val!r}. "
+                    f"Must be one of: {sorted(valid_syslog_tiers)}"
+                )
+
         cfg = cls(
             scan_targets=targets,
             tier_policy=policy,
@@ -367,6 +382,8 @@ class EngineConfig:
             metadata_dir=data.get("metadata_dir", "~/.engram"),
             dry_run=data.get("dry_run", False),
             verbose=data.get("verbose", False),
+            audit_log=data.get("audit_log", False),
+            audit_syslog=audit_syslog,
         )
         cfg.validate()
         return cfg
