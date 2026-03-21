@@ -31,6 +31,57 @@ COLD (1mo)   ██████                                    150 KB   8-12
 FROZEN (3mo) ██                                        50 KB   20-50x   ~5s
 ```
 
+### Merkle Tree Integrity — Anti-Hallucination for AI Memory
+
+AI systems hallucinate. They fabricate citations, invent past conversations, and confidently reference decisions that never happened. When your AI says "we decided X last week," how do you know that conversation actually existed?
+
+Engram's Merkle tree proves it.
+
+Every artifact registered in Engram gets a leaf in a binary hash tree. The root hash is a single value that covers every artifact across all four tiers. If any artifact is tampered with, corrupted, or fabricated, the root hash changes.
+
+```
+                     Root: 9f3a...
+                    /              \
+             Hash AB                Hash CD
+            /      \               /      \
+      Hash A      Hash B     Hash C      Hash D
+        |           |          |           |
+   Session 1   Session 2   Session 3   Session 4
+    (hot)       (warm)      (cold)     (frozen)
+```
+
+**Anti-hallucination:** When the AI claims "we discussed this in Session 3," Engram can produce a Merkle proof — a path of hashes from Session 3's leaf to the root. If the proof verifies, the conversation is real. If it doesn't, the AI is hallucinating. Cryptographic proof, not trust.
+
+**Selective disclosure:** To prove Session 3 exists, you only need 3 hashes (the proof path), not the contents of Sessions 1, 2, or 4. You prove the memory is real without revealing anything else.
+
+**Tamper detection:** Run `engram verify`. One root hash check tells you every artifact across all four tiers is intact. No need to decompress cold or frozen files. O(log n) instead of O(n).
+
+```bash
+$ engram verify
+Integrity Verification
+========================================
+Total checked:  487
+  Passed:       482
+  Failed:       0
+  Skipped:      5  (no hash stored)
+
+Merkle Tree
+  Root:         9f3a7b2c1d4e...
+  Leaves:       482
+  Integrity:    PASS
+```
+
+**How it works with the tiers:**
+
+| Tier | Merkle Behavior |
+|------|----------------|
+| **Hot** | Leaf added on `engram scan`. Hash = SHA-256 of original content. |
+| **Warm** | Leaf preserved. Hash stays valid — compression is lossless at this tier. |
+| **Cold** | Leaf preserved. Hash of pre-compression content remains verifiable via proof. |
+| **Frozen** | Leaf preserved. Months-old artifacts verifiable without decompressing Parquet. |
+
+The Merkle tree doesn't replace per-artifact SHA-256 — it adds a global integrity root that covers everything at once, and enables selective proofs for individual artifacts.
+
 ### Least Privilege by Design
 
 The tiered architecture isn't just compression. It's the principle of least privilege applied to AI context.

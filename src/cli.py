@@ -263,6 +263,20 @@ def cmd_verify(args: argparse.Namespace) -> None:
             print(f"  {path}")
             print(f"    expected: {expected}...  {actual}")
 
+    # Merkle tree verification
+    print()
+    if engine.merkle.leaf_count > 0:
+        merkle_ok, merkle_issues = engine.verify_integrity()
+        print(f"Merkle Tree")
+        print(f"  Root:         {engine.merkle_root[:16]}..." if engine.merkle_root else "  Root:         (empty)")
+        print(f"  Leaves:       {engine.merkle.leaf_count}")
+        print(f"  Integrity:    {'PASS' if merkle_ok else 'FAIL'}")
+        if merkle_issues:
+            for issue in merkle_issues:
+                print(f"    {issue}")
+    else:
+        print("Merkle Tree:    not initialized (run 'engram scan' to build)")
+
 
 def cmd_lock(args: argparse.Namespace) -> None:
     """Encrypt the index bundle (lock at session end)."""
