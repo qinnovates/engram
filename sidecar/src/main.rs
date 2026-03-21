@@ -24,11 +24,17 @@
 //!   [N+16 bytes] ciphertext + GCM auth tag
 //!
 //! Protocol (stdin/stdout):
-//!   ENCRYPT <input> <output> <tier>  -> OK | ERROR <msg>
-//!   DECRYPT <input> <output> <tier>  -> OK | ERROR <msg>
-//!   KEYGEN <tier>                     -> OK <pubkey_hex> | ERROR <msg>
-//!   PING                              -> PONG
-//!   QUIT                              -> BYE
+//!   ENCRYPT <input> <output> <tier>    -> OK | ERROR <msg>
+//!   DECRYPT <input> <output> <tier>    -> OK | ERROR <msg>
+//!   KEYGEN <tier>                       -> OK <pubkey_hex> | ERROR <msg>
+//!   MERKLE_ADD <hex_hash>               -> OK <leaf_index> | ERROR <msg>
+//!   MERKLE_ROOT                         -> OK <root_hex> | OK empty
+//!   MERKLE_PROOF <leaf_index>           -> OK <leaf> <idx> <siblings> <dirs> <root>
+//!   MERKLE_VERIFY <leaf> <sibs|dirs> <root> -> OK true | OK false
+//!   MERKLE_COUNT                        -> OK <count>
+//!   MERKLE_RESET                        -> OK
+//!   PING                                -> PONG
+//!   QUIT                                -> BYE
 
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -37,9 +43,26 @@ use zeroize::Zeroize;
 
 mod crypto;
 mod keychain;
+mod merkle;
 
 /// Maximum input file size (256 MB) to prevent mlock exhaustion
 const MAX_FILE_SIZE: u64 = 256 * 1024 * 1024;
+
+/// Global Merkle tree (lives for the lifetime of the sidecar process).
+/// Single-threaded sidecar — no concurrency, so Mutex is just for safety.
+use std::sync::Mutex;
+static MERKLE_TREE: Mutex<Option<merkle::MerkleTree>> = Mutex::new(None);
+
+fn with_merkle<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut merkle::MerkleTree) -> R,
+{
+    let mut guard = MERKLE_TREE.lock().unwrap();
+    if guard.is_none() {
+        *guard = Some(merkle::MerkleTree::new());
+    }
+    f(guard.as_mut().unwrap())
+}
 
 fn main() {
     // === Security hardening ===
@@ -110,12 +133,121 @@ fn main() {
                     handle_keygen(parts[1])
                 }
             }
+            "MERKLE_ADD" => {
+                if parts.len() < 2 {
+                    "ERROR Usage: MERKLE_ADD <hex_hash>".to_string()
+                } else {
+                    match with_merkle(|t| t.add_hex(parts[1])) {
+                        Ok(idx) => format!("OK {}", idx),
+                        Err(e) => format!("ERROR {}", e),
+                    }
+                }
+            }
+            "MERKLE_ROOT" => {
+                match with_merkle(|t| t.root_hex()) {
+                    Some(root) => format!("OK {}", root),
+                    None => "OK empty".to_string(),
+                }
+            }
+            "MERKLE_PROOF" => {
+                if parts.len() < 2 {
+                    "ERROR Usage: MERKLE_PROOF <leaf_index>".to_string()
+                } else {
+                    match parts[1].parse::<usize>() {
+                        Ok(idx) => match with_merkle(|t| t.proof(idx)) {
+                            Ok(proof) => proof.to_response(),
+                            Err(e) => format!("ERROR {}", e),
+                        },
+                        Err(_) => "ERROR Invalid index".to_string(),
+                    }
+                }
+            }
+            "MERKLE_VERIFY" => {
+                // MERKLE_VERIFY <leaf_hex> <siblings_csv> <directions_csv> <root_hex>
+                if parts.len() < 4 {
+                    "ERROR Usage: MERKLE_VERIFY <leaf_hex> <siblings_csv,directions_csv> <root_hex>".to_string()
+                } else {
+                    handle_merkle_verify(&parts[1..])
+                }
+            }
+            "MERKLE_COUNT" => {
+                format!("OK {}", with_merkle(|t| t.leaf_count()))
+            }
+            "MERKLE_RESET" => {
+                *MERKLE_TREE.lock().unwrap() = Some(merkle::MerkleTree::new());
+                "OK".to_string()
+            }
             _ => "ERROR Unknown command".to_string(),
         };
 
         let _ = writeln!(stdout, "{}", response);
         let _ = stdout.flush();
     }
+}
+
+// === Merkle verify handler ===
+
+fn handle_merkle_verify(args: &[&str]) -> String {
+    // Parse: leaf_hex siblings_csv,directions_csv root_hex
+    // The protocol packs siblings and directions into one field for simplicity
+    if args.len() < 3 {
+        return "ERROR Need leaf_hex, siblings_csv,directions_csv, root_hex".to_string();
+    }
+
+    let leaf_hex = args[0];
+    let combined = args[1]; // "sib1,sib2|left,right" format
+    let root_hex = args[2];
+
+    let leaf = match hex_to_array(leaf_hex) {
+        Ok(a) => a,
+        Err(e) => return format!("ERROR {}", e),
+    };
+    let root = match hex_to_array(root_hex) {
+        Ok(a) => a,
+        Err(e) => return format!("ERROR {}", e),
+    };
+
+    // Split combined by | into siblings and directions
+    let halves: Vec<&str> = combined.split('|').collect();
+    if halves.len() != 2 {
+        return "ERROR Format: siblings_csv|directions_csv".to_string();
+    }
+
+    let sibling_hexes: Vec<&str> = halves[0].split(',').collect();
+    let directions: Vec<String> = halves[1].split(',').map(|s| s.to_string()).collect();
+
+    if sibling_hexes.len() != directions.len() {
+        return "ERROR Sibling count != direction count".to_string();
+    }
+
+    let mut siblings = Vec::new();
+    for sh in &sibling_hexes {
+        match hex_to_array(sh) {
+            Ok(a) => siblings.push(a),
+            Err(e) => return format!("ERROR {}", e),
+        }
+    }
+
+    let proof = merkle::MerkleProof {
+        leaf_hash: leaf,
+        leaf_index: 0, // not needed for verify
+        siblings,
+        directions,
+        root,
+    };
+
+    let valid = merkle::MerkleTree::verify(&proof);
+    format!("OK {}", valid)
+}
+
+fn hex_to_array(hex: &str) -> Result<[u8; 32], String> {
+    let bytes = hex::decode(hex)?;
+    if bytes.len() != 32 {
+        return Err("Expected 64-char hex".into());
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&bytes);
+    Ok(arr)
 }
 
 // === Input validation ===
