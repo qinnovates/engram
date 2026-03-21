@@ -208,10 +208,32 @@ def _resolve_private_key(source: str) -> str:
 
     elif source.startswith("command:"):
         import shlex
+        # Allowlist: only known key management tools may be invoked
+        _ALLOWED_COMMANDS = {
+            "vault", "op", "aws", "gcloud", "az", "security",
+            "gpg", "age", "sops", "pass",
+            "echo", "false", "true", "cat",  # Needed for tests + simple retrievals
+        }
         cmd = source[8:]
         parts = shlex.split(cmd)
         if not parts:
             raise EncryptionError("Empty key retrieval command")
+        # Validate executable against allowlist (basename only, no path traversal)
+        executable = os.path.basename(parts[0])
+        if executable not in _ALLOWED_COMMANDS:
+            raise EncryptionError(
+                f"Command '{executable}' not in allowed key tools: "
+                f"{', '.join(sorted(_ALLOWED_COMMANDS))}. "
+                f"Use a wrapper script registered in the allowlist."
+            )
+        # Reject shell metacharacters in arguments
+        _SHELL_META = set(';&|`$(){}[]!#~')
+        for arg in parts[1:]:
+            if any(c in _SHELL_META for c in arg):
+                raise EncryptionError(
+                    f"Shell metacharacter in command argument: '{arg}'. "
+                    f"This is blocked for security."
+                )
         result = subprocess.run(
             parts, capture_output=True, text=True, timeout=30,
         )

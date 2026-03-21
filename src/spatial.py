@@ -349,12 +349,12 @@ class SpatialMemory:
     # ── Persistence ──
 
     def _save(self) -> None:
-        # Save registry
+        # Save registry (atomic write)
+        from .fileutil import atomic_write_text
         registry = {k: v.to_dict() for k, v in self.artifacts.items()}
-        with open(self._registry_path, "w") as f:
-            json.dump(registry, f, indent=2)
+        atomic_write_text(self._registry_path, json.dumps(registry, indent=2))
 
-        # Save Merkle tree
+        # Save Merkle tree (already uses atomic write internally)
         self.tree.save(str(self._tree_path))
 
     def _load(self) -> None:

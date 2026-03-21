@@ -110,8 +110,9 @@ class MerkleTree:
         return len(self.leaves) - 1
 
     def add_hex(self, hex_hash: str) -> int:
-        """Add a pre-computed hash (hex) as a leaf."""
-        self.leaves.append(bytes.fromhex(hex_hash))
+        """Add a pre-computed hash (hex) as a leaf. Applies domain separation."""
+        leaf_hash = _hash_leaf(bytes.fromhex(hex_hash))
+        self.leaves.append(leaf_hash)
         self._dirty = True
         return len(self.leaves) - 1
 
@@ -193,7 +194,8 @@ class MerkleTree:
             else:
                 current = _hash_node(sibling, current)
 
-        return current.hex() == proof.root
+        import hmac
+        return hmac.compare_digest(current.hex(), proof.root)
 
     # ── Serialization ──
 
@@ -209,8 +211,20 @@ class MerkleTree:
     def from_dict(cls, d: dict) -> MerkleTree:
         tree = cls()
         for hex_hash in d.get("leaves", []):
+            # Validate hex length (SHA-256 = 32 bytes = 64 hex chars)
+            if not isinstance(hex_hash, str) or len(hex_hash) != 64:
+                continue  # Skip invalid entries
             tree.leaves.append(bytes.fromhex(hex_hash))
         tree._dirty = True
+
+        # Verify root matches stored root (detect corruption on load)
+        stored_root = d.get("root")
+        if stored_root and tree.root_hex != stored_root:
+            raise ValueError(
+                f"Merkle tree corrupt on load: stored root={stored_root[:16]}... "
+                f"computed root={tree.root_hex[:16] if tree.root_hex else 'empty'}..."
+            )
+
         return tree
 
     def to_json(self) -> str:
@@ -221,9 +235,22 @@ class MerkleTree:
         return cls.from_dict(json.loads(s))
 
     def save(self, path: str) -> None:
-        """Save tree to a JSON file."""
-        with open(path, "w") as f:
-            f.write(self.to_json())
+        """Save tree to a JSON file (atomic write to prevent corruption)."""
+        import os
+        import tempfile
+        content = self.to_json()
+        dir_path = os.path.dirname(path) or "."
+        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
+        try:
+            os.write(fd, content.encode())
+            os.close(fd)
+            os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, path)
+        except BaseException:
+            os.close(fd) if not os.get_inheritable(fd) else None
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
 
     @classmethod
     def load(cls, path: str) -> MerkleTree:
