@@ -316,58 +316,79 @@ For the full detailed walkthrough of how every component works — registration,
 
 ```
 engram/
-├── .claude-plugin/
-│   └── plugin.json                # Anthropic marketplace manifest
-├── .github/workflows/
-│   └── ci.yml                     # GitHub Actions (pytest on push)
-├── sidecar/                       # Rust crypto sidecar (459 KB binary)
+├── sidecar/                        # Rust crypto + Merkle-Index sidecar (491 KB binary)
 │   ├── Cargo.toml
 │   └── src/
-│       ├── main.rs                # mlock, zeroize, core dump disabled, env cleared
-│       ├── crypto.rs              # ML-KEM-768 + X25519 + AES-256-GCM (NIST-only)
-│       └── keychain.rs            # macOS Security.framework integration
-├── src/
-│   ├── engine.py                  # Orchestrator (scan → index → tier → recall)
-│   ├── pipeline.py                # Multi-stage compression (minify → strip → dict → Parquet)
-│   ├── context.py                 # Semantic index + hybrid search (keyword + vector + RRF)
-│   ├── embeddings.py              # Matryoshka tiered embeddings (384/256/128/64-binary)
-│   ├── vector_index.py            # HNSW nearest-neighbor per tier
-│   ├── hybrid_search.py           # Reciprocal rank fusion + contextual retrieval
-│   ├── lookup_tables.py           # LSH hash tables + Product Quantization codebook
-│   ├── envelope.py                # Asymmetric PQ envelope encryption (per-artifact DEK)
-│   ├── vault.py                   # Python client for Rust sidecar
-│   ├── index_crypto.py            # Index bundle encryption (lock/unlock)
-│   ├── encryption.py              # age CLI integration + validation
-│   ├── compressor.py              # zstd streaming compress/decompress
-│   ├── config.py                  # Config schema + validation + sensitive dir blocklist
-│   ├── metadata.py                # Artifact registry + SHA-256 integrity
-│   ├── scanner.py                 # AI assistant artifact auto-detection (18 locations)
-│   ├── setup.py                   # Guided/interactive/auto setup wizard
-│   ├── audit.py                   # Audit logger with regex PII/secret detection
-│   ├── fileutil.py                # Shared atomic writes, path containment, hashing
-│   └── cli.py                     # CLI: init, scan, run, status, search, context, recall,
-│                                  #       reindex, verify, lock, unlock, encrypt-setup
-├── skills/engram/
-│   └── SKILL.md                   # Claude Code skill (13 use case examples)
-├── hooks/
-│   └── hooks.json                 # SessionStart + PreCompact hooks
+│       ├── main.rs                 # Protocol handler, security hardening (mlockall, zero core dumps)
+│       ├── merkle.rs               # SHA3-256 Merkle tree + inverted keyword index + HMAC seal
+│       ├── crypto.rs               # ML-KEM-768 + X25519 + AES-256-GCM (NIST-only)
+│       └── keychain.rs             # macOS Security.framework integration
+├── src/                            # Python: orchestration, CLI, search
+│   ├── engine.py                   # Tiering engine (scan → index → tier → recall)
+│   ├── pipeline.py                 # Compression pipeline (minify → strip → dict → Parquet)
+│   ├── context.py                  # Semantic index + context builder
+│   ├── session_parser.py           # Conversation content extraction from AI session files
+│   ├── predictor.py                # Matryoshka cascading predictive context loader
+│   ├── spatial.py                  # Spatial memory extension (Spot integration)
+│   ├── embeddings.py               # Matryoshka tiered embeddings (384/256/128/64-dim)
+│   ├── vector_index.py             # HNSW nearest-neighbor per tier
+│   ├── hybrid_search.py            # Reciprocal rank fusion (keyword + vector)
+│   ├── lookup_tables.py            # LSH hash tables + Product Quantization codebook
+│   ├── envelope.py                 # Per-artifact envelope encryption (DEK per file)
+│   ├── vault.py                    # Python client for Rust sidecar
+│   ├── index_crypto.py             # Index bundle encryption (lock/unlock)
+│   ├── encryption.py               # Encryption orchestration
+│   ├── compressor.py               # zstd streaming compress/decompress
+│   ├── config.py                   # Config schema + sensitive dir blocklist
+│   ├── metadata.py                 # Artifact registry + SHA-256 integrity
+│   ├── scanner.py                  # AI assistant artifact auto-detection (Claude, OpenClaw, ChatGPT, Cursor, Copilot)
+│   ├── setup.py                    # Guided/interactive/auto setup wizard
+│   ├── audit.py                    # Audit logger with PII/secret detection
+│   ├── fileutil.py                 # Atomic writes, path containment, hashing
+│   └── cli.py                      # CLI entry point (14 commands)
 ├── docs/
-│   ├── ARCHITECTURE.md            # Detailed technical documentation (442 lines)
-│   ├── KEY-STORAGE-GUIDE.md       # Key management guide
-│   └── blog-post.md               # Launch blog post
-├── tests/                         # 116 tests
-│   ├── test_compressor.py
+│   ├── FAQ.md                      # 30+ questions across 8 topics
+│   ├── ARCHITECTURE.md             # Full technical deep dive
+│   ├── ARCHITECTURE-PROPOSAL.md    # v2 architecture with measured benchmarks
+│   ├── ENGRAM-V2-ARCHITECTURE.md   # Brain-informed design (quorum-reviewed)
+│   ├── MERKLE-INDEX-SPEC.md        # Merkle-as-Index technical spec
+│   ├── SPATIAL-EXTENSION.md        # Spot spatial memory integration
+│   ├── KEY-STORAGE-GUIDE.md        # Key management (Keychain, Vault, YubiKey)
+│   └── blog-post.md                # Launch blog post
+├── tests/                          # 141 tests
+│   ├── test_merkle.py              # Merkle tree via Rust sidecar
+│   ├── test_spatial.py             # Spatial memory extension
+│   ├── benchmark_retrieval.py      # Retrieval quality evaluation (Recall@k, MRR)
 │   ├── test_engine.py
+│   ├── test_compressor.py
 │   ├── test_envelope.py
 │   ├── test_metadata.py
 │   ├── test_pipeline.py
 │   ├── test_embeddings.py
 │   └── test_lookup_tables.py
-├── marketplace.json               # Plugin distribution metadata
-├── pyproject.toml                 # Package config (pip installable)
+├── skills/engram/
+│   └── SKILL.md                    # Claude Code skill (13 use cases)
+├── hooks/
+│   └── hooks.json                  # SessionStart + PreCompact hooks
+├── archived/
+│   └── merkle_python_reference.py  # Original Python Merkle (replaced by Rust)
+├── marketplace.json                # Distribution metadata
+├── pyproject.toml                  # Package config (pip installable)
 ├── LICENSE                        # MIT
 └── README.md
 ```
+
+### Documentation
+
+| Document | Contents |
+|----------|----------|
+| **[FAQ](docs/FAQ.md)** | 30+ questions: Merkle trees, Matryoshka embeddings, sidecar, PQC, performance, security |
+| **[Architecture](docs/ARCHITECTURE.md)** | Full technical deep dive: registration, tiers, compression, search, encryption, audit |
+| **[v2 Architecture](docs/ENGRAM-V2-ARCHITECTURE.md)** | Brain-informed design, quorum-reviewed: verified summaries, section recall, activation graph |
+| **[Merkle-Index Spec](docs/MERKLE-INDEX-SPEC.md)** | Merkle tree as search accelerator: measured 400x lookup improvement, sidecar protocol |
+| **[Architecture Proposal](docs/ARCHITECTURE-PROPOSAL.md)** | Full v2 proposal: system diagrams, data flows, performance model, implementation strategy |
+| **[Spatial Extension](docs/SPATIAL-EXTENSION.md)** | Spot integration: tiered spatial memory, NSP peer sharing, QIF AI0 stack |
+| **[Key Storage Guide](docs/KEY-STORAGE-GUIDE.md)** | Key management: Keychain, Vault, YubiKey, environment variables |
 
 ---
 

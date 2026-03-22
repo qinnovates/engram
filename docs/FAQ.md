@@ -1,5 +1,48 @@
 # Engram FAQ
 
+## Table of Contents
+
+- [General](#general)
+  - [What is Engram?](#what-is-engram)
+  - [Why not just use a bigger context window?](#why-not-just-use-a-bigger-context-window)
+  - [How does it compare to just saving chat logs?](#how-does-it-compare-to-just-saving-chat-logs)
+  - [What is context drift?](#what-is-context-drift)
+- [The Four Tiers](#the-four-tiers)
+  - [How do the tiers work?](#how-do-the-tiers-work)
+  - [What triggers a tier transition?](#what-triggers-a-tier-transition)
+  - [Can I prevent an artifact from moving to a lower tier?](#can-i-prevent-an-artifact-from-moving-to-a-lower-tier)
+- [Merkle Tree Integrity](#merkle-tree-integrity)
+  - [What is a Merkle tree?](#what-is-a-merkle-tree)
+  - [How does it prevent hallucination?](#how-does-it-prevent-hallucination)
+  - [What is a Merkle proof?](#what-is-a-merkle-proof)
+  - [Why SHA3-256 instead of SHA-256?](#why-sha3-256-instead-of-sha-256)
+  - [What is root sealing?](#what-is-root-sealing)
+- [Matryoshka Embeddings](#matryoshka-embeddings)
+  - [What are they?](#what-are-they)
+  - [How does tiered search work?](#how-does-tiered-search-work)
+  - [How expensive is embedding generation?](#how-expensive-is-embedding-generation)
+- [The Rust Sidecar](#the-rust-sidecar)
+  - [Why a separate Rust binary?](#why-a-separate-rust-binary)
+  - [How does Python talk to the sidecar?](#how-does-python-talk-to-the-sidecar)
+  - [What commands does it support?](#what-commands-does-it-support)
+  - [How big is the binary?](#how-big-is-the-binary)
+- [Encryption](#encryption)
+  - [What algorithms does Engram use?](#what-algorithms-does-engram-use)
+  - [What is ML-KEM-768?](#what-is-ml-kem-768)
+  - [Why post-quantum?](#why-post-quantum-nobody-has-a-quantum-computer)
+  - [Are summaries encrypted?](#are-summaries-encrypted)
+  - [Where are encryption keys stored?](#where-are-encryption-keys-stored)
+- [Components](#components)
+  - [How is Engram structured?](#how-is-engram-structured)
+  - [What does Python do vs Rust?](#what-does-python-do-vs-what-does-rust-do)
+- [Performance](#performance)
+  - [Measured benchmarks](#measured-benchmarks-4560-real-artifacts)
+- [Security](#security)
+  - [What are the known risks?](#what-are-the-known-risks)
+  - [Has it been security reviewed?](#has-it-been-security-reviewed)
+
+---
+
 ## General
 
 ### What is Engram?

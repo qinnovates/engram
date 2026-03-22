@@ -1,5 +1,20 @@
 # Key Storage Guide
 
+## Table of Contents
+
+- [How keys work in Engram](#how-keys-work-in-engram)
+- [Setup](#setup)
+- [Supported key sources](#supported-key-sources)
+  - [macOS Keychain](#macos-keychain)
+  - [External command (Vault, KMS, custom)](#external-command-vault-kms-custom)
+  - [Environment variable (CI/CD only)](#environment-variable-cicd-only)
+  - [YubiKey / FIDO2 (hardware-bound, most secure)](#yubikey-fido2-hardware-bound-most-secure)
+  - [File-based keys](#file-based-keys)
+- [Security notes](#security-notes)
+- [Risk comparison](#risk-comparison)
+
+---
+
 ## How keys work in Engram
 
 Engram uses a compiled Rust sidecar (`engram-vault`) for all private key operations. Private keys never enter Python, never touch disk as files, and never appear in terminal output or process arguments.

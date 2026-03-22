@@ -1,5 +1,28 @@
 # Engram v2: Full Architecture Proposal
 
+## Table of Contents
+
+- [The One-Sentence Architecture](#the-one-sentence-architecture)
+- [System Diagram](#system-diagram)
+- [Data Flow: Search (80% of cases — no decompression needed)](#data-flow-search-80-of-cases-no-decompression-needed)
+- [Data Flow: Full Recall (20% of cases — decompression needed)](#data-flow-full-recall-20-of-cases-decompression-needed)
+- [Data Flow: Registration (on `engram scan`)](#data-flow-registration-on-engram-scan)
+- [Data Flow: Tier Transition (on `engram run`)](#data-flow-tier-transition-on-engram-run)
+- [Memory Architecture (How It Maps to the Brain)](#memory-architecture-how-it-maps-to-the-brain)
+- [Performance Model](#performance-model)
+  - [Measured baseline (v1, 4,560 artifacts)](#measured-baseline-v1-4560-artifacts)
+  - [Projected v2 (sidecar holds index)](#projected-v2-sidecar-holds-index)
+  - [Net improvement](#net-improvement)
+- [Crypto Architecture (Unchanged)](#crypto-architecture-unchanged)
+- [Implementation Strategy](#implementation-strategy)
+  - [Phase 1: Merkle-Index in Sidecar (2-3 days)](#phase-1-merkle-index-in-sidecar-2-3-days)
+  - [Phase 2: Co-occurrence Graph (1-2 days)](#phase-2-co-occurrence-graph-1-2-days)
+  - [Phase 3: Selective Section Decompression (1 day)](#phase-3-selective-section-decompression-1-day)
+  - [Not Building](#not-building)
+- [Success Criteria](#success-criteria)
+
+---
+
 *2026-03-21. Kevin Qi. Architecture derived from measured bottlenecks, neuroscience memory models, and 5-expert quorum review.*
 
 ---

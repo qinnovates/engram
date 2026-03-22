@@ -11,6 +11,17 @@ ai_assisted: true
 
 # Architecting Brain's Memory To Solve AI Context Persistence
 
+## Table of Contents
+
+- [The brain already solved this](#the-brain-already-solved-this)
+- [Lookup tables all the way down](#lookup-tables-all-the-way-down)
+- [Semantic indexing: the hippocampus](#semantic-indexing-the-hippocampus)
+- [Your sessions are a target](#your-sessions-are-a-target)
+- [What makes this different](#what-makes-this-different)
+- [See what you're wasting in 30 seconds](#see-what-youre-wasting-in-30-seconds)
+
+---
+
 *A Semantic Indexing, KV Caching, and Lookup Tables approach for AI Memory.*
 
 AI context windows have a hard limit. Fill it up and the oldest memories fall off. Your assistant forgets what you told it last week.

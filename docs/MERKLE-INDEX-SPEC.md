@@ -1,5 +1,19 @@
 # Merkle-as-Index: Technical Specification
 
+## Table of Contents
+
+- [Measured Bottlenecks (4,560 artifacts)](#measured-bottlenecks-4560-artifacts)
+- [Architecture](#architecture)
+  - [Sidecar Data Structures (Rust, in-memory)](#sidecar-data-structures-rust-in-memory)
+  - [New Sidecar Protocol Commands](#new-sidecar-protocol-commands)
+  - [Memory Footprint](#memory-footprint)
+  - [What Changes for Claude](#what-changes-for-claude)
+  - [What Changes for Encryption](#what-changes-for-encryption)
+  - [What This Means for Merkle Integrity](#what-this-means-for-merkle-integrity)
+  - [Implementation Steps](#implementation-steps)
+
+---
+
 *2026-03-21. Based on measured bottlenecks, not theoretical analysis.*
 
 ## Measured Bottlenecks (4,560 artifacts)

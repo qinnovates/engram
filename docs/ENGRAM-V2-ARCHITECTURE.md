@@ -1,5 +1,28 @@
 # Engram v2 Architecture — Brain-Informed Real-Time AI Memory
 
+## Table of Contents
+
+- [The Problem With v1](#the-problem-with-v1)
+- [What the Brain Does (and Where the Analogy Stops)](#what-the-brain-does-and-where-the-analogy-stops)
+- [Architecture (Ordered by Implementation Priority)](#architecture-ordered-by-implementation-priority)
+  - [1. Merkle-Verified Summaries](#1-merkle-verified-summaries)
+  - [2. Selective Section Decompression](#2-selective-section-decompression)
+  - [3. Activation Graph (Simple Version)](#3-activation-graph-simple-version)
+- [Deferred (Measure Before Building)](#deferred-measure-before-building)
+  - [4. Predictive Pre-Fetch](#4-predictive-pre-fetch)
+  - [5. Reconsolidation (Update on Access)](#5-reconsolidation-update-on-access)
+- [Missing Sections (Identified by Quorum)](#missing-sections-identified-by-quorum)
+  - [Concurrent Access](#concurrent-access)
+  - [Why Engram Remains Valuable When Context Windows Grow](#why-engram-remains-valuable-when-context-windows-grow)
+- [Implementation Phases](#implementation-phases)
+  - [Phase 1 (Build Now)](#phase-1-build-now)
+  - [Phase 2 (After Phase 1 Deployed + Measured)](#phase-2-after-phase-1-deployed-measured)
+  - [Phase 3 (After Concurrent Access Solved)](#phase-3-after-concurrent-access-solved)
+- [Crypto Model (Unchanged)](#crypto-model-unchanged)
+- [Quorum Review Summary](#quorum-review-summary)
+
+---
+
 *Drafted 2026-03-21. Kevin Qi + Claude Opus 4.6.*
 *Reviewed by 5-expert quorum (neuroscientist, distributed systems, AI agent, security, devil's advocate). Revised based on consensus.*
 
