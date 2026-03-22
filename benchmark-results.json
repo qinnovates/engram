@@ -1,0 +1,162 @@
+{
+  "metadata": {
+    "session_count": 12,
+    "query_count": 7,
+    "timestamp": "2026-03-22T00:16:02"
+  },
+  "queries": [
+    {
+      "query": "spot app architecture swift",
+      "description": "Sessions where we built or discussed the Spot LiDAR navigation app",
+      "relevant_count": 1,
+      "v1_keyword": {
+        "latency_ms": 0.07750000804662704,
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "mrr": 1.0,
+        "matches": 8
+      },
+      "v2_keyword": {
+        "latency_ms": 0.3757079830393195,
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "mrr": 1.0,
+        "matches": 8
+      }
+    },
+    {
+      "query": "merkle tree integrity proof",
+      "description": "Sessions about Merkle tree implementation for Engram",
+      "relevant_count": 1,
+      "v1_keyword": {
+        "latency_ms": 0.139375013532117,
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "mrr": 1.0,
+        "matches": 1
+      },
+      "v2_keyword": {
+        "latency_ms": 0.09045799379236996,
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "mrr": 1.0,
+        "matches": 1
+      }
+    },
+    {
+      "query": "braille haptics education",
+      "description": "Sessions about SixDots braille learning app",
+      "relevant_count": 6,
+      "v1_keyword": {
+        "latency_ms": 0.06445799954235554,
+        "recall@1": 0.16666666666666666,
+        "recall@3": 0.5,
+        "mrr": 1.0,
+        "matches": 6
+      },
+      "v2_keyword": {
+        "latency_ms": 0.15199999324977398,
+        "recall@1": 0.16666666666666666,
+        "recall@3": 0.5,
+        "mrr": 1.0,
+        "matches": 5
+      }
+    },
+    {
+      "query": "attention transformer neural network",
+      "description": "Sessions discussing the Attention paper or transformers",
+      "relevant_count": 1,
+      "v1_keyword": {
+        "latency_ms": 0.05670799873769283,
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "mrr": 1.0,
+        "matches": 2
+      },
+      "v2_keyword": {
+        "latency_ms": 0.09875002433545887,
+        "recall@1": 0.0,
+        "recall@3": 1.0,
+        "mrr": 0.5,
+        "matches": 2
+      }
+    },
+    {
+      "query": "dog tracker bench finder",
+      "description": "Sessions about Spot's dog tracking or seat finding features",
+      "relevant_count": 3,
+      "v1_keyword": {
+        "latency_ms": 0.05699999746866524,
+        "recall@1": 0.3333333333333333,
+        "recall@3": 1.0,
+        "mrr": 1.0,
+        "matches": 3
+      },
+      "v2_keyword": {
+        "latency_ms": 0.14895800268277526,
+        "recall@1": 0.3333333333333333,
+        "recall@3": 1.0,
+        "mrr": 1.0,
+        "matches": 3
+      }
+    },
+    {
+      "query": "nsp protocol blockchain audit",
+      "description": "Sessions about NSP, blockchain investigation, audit trails",
+      "relevant_count": 1,
+      "v1_keyword": {
+        "latency_ms": 0.054208008805289865,
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "mrr": 1.0,
+        "matches": 1
+      },
+      "v2_keyword": {
+        "latency_ms": 0.07074998575262725,
+        "recall@1": 1.0,
+        "recall@3": 1.0,
+        "mrr": 1.0,
+        "matches": 1
+      }
+    },
+    {
+      "query": "keyboard ipad terminal setup",
+      "description": "Sessions about hardware/terminal configuration",
+      "relevant_count": 2,
+      "v1_keyword": {
+        "latency_ms": 0.05095801316201687,
+        "recall@1": 0.5,
+        "recall@3": 1.0,
+        "mrr": 1.0,
+        "matches": 2
+      },
+      "v2_keyword": {
+        "latency_ms": 0.06354201468639076,
+        "recall@1": 0.5,
+        "recall@3": 1.0,
+        "mrr": 1.0,
+        "matches": 2
+      }
+    }
+  ],
+  "summary": {
+    "v1-keyword": {
+      "method": "v1-keyword",
+      "avg_latency_ms": 0.07145814847068063,
+      "avg_recall_at_1": 0.7142857142857143,
+      "avg_recall_at_3": 0.9285714285714286,
+      "avg_recall_at_5": 0.9761904761904763,
+      "avg_precision_at_1": 1.0,
+      "avg_mrr": 1.0
+    },
+    "v2-keyword": {
+      "method": "v2-keyword",
+      "avg_latency_ms": 0.1428808567912451,
+      "avg_recall_at_1": 0.5714285714285714,
+      "avg_recall_at_3": 0.9285714285714286,
+      "avg_recall_at_5": 0.9761904761904763,
+      "avg_precision_at_1": 0.8571428571428571,
+      "avg_mrr": 0.9285714285714286
+    }
+  }
+}

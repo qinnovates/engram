@@ -206,7 +206,8 @@ impl MerkleIndex {
 
     // ── Search (the fast path — no disk, no decompression) ──
 
-    /// Keyword search. Returns matching payloads with Merkle proofs.
+    /// Keyword search with scoring. Returns matching payloads ranked by relevance.
+    /// Score = (matching terms / total terms). Union, not intersection.
     pub fn search(&mut self, query: &str) -> Vec<SearchResult> {
         let terms: Vec<String> = query.to_lowercase()
             .split_whitespace()
@@ -217,24 +218,27 @@ impl MerkleIndex {
             return Vec::new();
         }
 
-        // Intersect keyword sets for multi-term queries
-        let mut matching_hashes: Option<HashSet<[u8; 32]>> = None;
+        // Score each artifact by how many query terms match its keywords
+        let mut scores: HashMap<[u8; 32], f64> = HashMap::new();
+        let term_count = terms.len() as f64;
+
         for term in &terms {
             // Substring match across all keywords
-            let mut term_matches = HashSet::new();
             for (kw, hashes) in &self.keyword_index {
                 if kw.contains(term.as_str()) {
-                    term_matches.extend(hashes);
+                    for hash in hashes {
+                        *scores.entry(*hash).or_insert(0.0) += 1.0 / term_count;
+                    }
                 }
             }
-
-            matching_hashes = Some(match matching_hashes {
-                Some(existing) => existing.intersection(&term_matches).copied().collect(),
-                None => term_matches,
-            });
         }
 
-        let hashes = matching_hashes.unwrap_or_default();
+        // Sort by score descending, take top 20
+        let mut scored: Vec<([u8; 32], f64)> = scores.into_iter().collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(20);
+
+        let hashes: HashSet<[u8; 32]> = scored.iter().map(|(h, _)| *h).collect();
 
         // Collect matches first (avoids borrow conflict with self.proof)
         let matches: Vec<(usize, LeafPayload)> = hashes.iter()
