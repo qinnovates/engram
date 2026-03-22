@@ -33,6 +33,8 @@ FROZEN (3mo) ██                                        50 KB   20-50x   ~5s
 
 ### Merkle Tree Integrity — Anti-Hallucination for AI Memory
 
+*Added 2026-03-21. Upgraded from SHA-256 to SHA3-256 with HMAC-SHA3 root sealing on the same date.*
+
 AI systems hallucinate. They fabricate citations, invent past conversations, and confidently reference decisions that never happened. When your AI says "we decided X last week," how do you know that conversation actually existed?
 
 Engram's Merkle tree proves it.
@@ -40,7 +42,8 @@ Engram's Merkle tree proves it.
 Every artifact registered in Engram gets a leaf in a binary hash tree. The root hash is a single value that covers every artifact across all four tiers. If any artifact is tampered with, corrupted, or fabricated, the root hash changes.
 
 ```
-                     Root: 9f3a...
+                  Root: 061e... (SHA3-256)
+                  Seal: 145f... (HMAC-SHA3, PQC-derived key)
                     /              \
              Hash AB                Hash CD
             /      \               /      \
@@ -66,7 +69,7 @@ Total checked:  487
   Skipped:      5  (no hash stored)
 
 Merkle Tree
-  Root:         9f3a7b2c1d4e...
+  Root:         061e4093b1a0...
   Leaves:       482
   Integrity:    PASS
 ```
@@ -75,12 +78,48 @@ Merkle Tree
 
 | Tier | Merkle Behavior |
 |------|----------------|
-| **Hot** | Leaf added on `engram scan`. Hash = SHA-256 of original content. |
+| **Hot** | Leaf added on `engram scan`. Hash = SHA3-256 of original content. |
 | **Warm** | Leaf preserved. Hash stays valid — compression is lossless at this tier. |
 | **Cold** | Leaf preserved. Hash of pre-compression content remains verifiable via proof. |
 | **Frozen** | Leaf preserved. Months-old artifacts verifiable without decompressing Parquet. |
 
-The Merkle tree doesn't replace per-artifact SHA-256 — it adds a global integrity root that covers everything at once, and enables selective proofs for individual artifacts.
+#### Why SHA3-256 Instead of SHA-256
+
+Most Merkle tree implementations use SHA-256. Bitcoin established it as the default in 2009, and RFC 6962 (Certificate Transparency) codified it in 2013. But SHA-256 is a convention, not a requirement. Any collision-resistant hash function works.
+
+Engram uses SHA3-256 (NIST FIPS 202) for three reasons:
+
+1. **Post-quantum collision resistance.** SHA-256 has ~128-bit collision resistance classically, but quantum algorithms (Brassard-Hoyer-Tapp) reduce this to ~64-bit. SHA3-256 maintains 128-bit collision resistance even against quantum adversaries. For Merkle proofs used in selective disclosure (proving one artifact exists without revealing others), collision resistance is the property that matters.
+
+2. **Sponge construction.** SHA-256 uses Merkle-Damgard construction, which is susceptible to length extension attacks. SHA3's sponge construction is immune by design. While length extension isn't a direct Merkle tree vulnerability, using a hash with fewer structural weaknesses reduces the attack surface.
+
+3. **Long-term audit trails.** Engram's Merkle tree targets use cases with 10-30 year retention requirements — medical device compliance logs (FDA), regulatory audit records (NIST AI RMF), BCI session integrity (QIF). Choosing the stronger hash now costs nothing (SHA3-256 runs at comparable speed to SHA-256 in Rust with LTO). Upgrading later would require re-hashing every artifact in every tier.
+
+The Merkle tree runs entirely in the Rust sidecar (`engram-vault`). SHA3-256 hashing, proof generation, proof verification, and HMAC root sealing all happen in compiled Rust with mlocked memory and zero core dumps. Python never handles hash computations for integrity-critical operations.
+
+#### PQC Root Sealing
+
+The Merkle root is sealed with HMAC-SHA3-256 using a key derived from the ML-KEM-768 (FIPS 203) shared secret via HKDF. This proves the root was computed by a process with access to the post-quantum key material — not just that the hashes are correct, but that the entity who computed them holds the PQC key.
+
+```
+ML-KEM-768 shared secret
+    → HKDF-SHA3-256 key derivation
+    → HMAC-SHA3-256(merkle_root)
+    → root seal (32 bytes, constant-time verified)
+```
+
+Verification is constant-time in the Rust sidecar (prevents timing side-channel attacks on seal comparison).
+
+The full PQC integrity stack:
+
+| Layer | Algorithm | NIST Standard |
+|-------|-----------|---------------|
+| Tree hashes | SHA3-256 | FIPS 202 |
+| Root seal | HMAC-SHA3-256 | FIPS 198-1 + FIPS 202 |
+| Seal key source | ML-KEM-768 + HKDF | FIPS 203 + SP 800-56C |
+| Artifact encryption | AES-256-GCM | FIPS 197 + SP 800-38D |
+| Key encapsulation | ML-KEM-768 + X25519 | FIPS 203 |
+| All operations | Rust sidecar | mlocked, zero core dumps |
 
 ### Least Privilege by Design
 
