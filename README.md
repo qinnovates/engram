@@ -37,7 +37,11 @@ Engram adds post-quantum encryption (ML-KEM-768 + X25519 hybrid, NIST FIPS 203) 
 
 Every recalled artifact is verified via a SHA3-256 Merkle tree with HMAC root sealing — proving the memory hasn't been tampered with and that the AI isn't hallucinating past conversations. Integrity and confidentiality, not just one or the other.
 
-AI is here to stay. Secure memory for AI is the next big infrastructure problem. Engram is a first step.
+**Context drift** — the compounding approximation error that occurs when an LLM references compressed or summarized memory instead of original content. Each recall through a lossy representation introduces small errors. Over many references, these errors compound: memory A gets summarized, memory B references A's summary, memory C references B which referenced A's summary. C is now two approximation steps from the original. The model builds confidently on a drifting foundation.
+
+Engram's Merkle tree addresses the integrity dimension of context drift: every recalled artifact is provably identical to what was originally stored. The proof says "this is the real Session 47, bit-for-bit." The summary may lose nuance (semantic drift from compression is inherent), but the underlying artifact is provably intact. When the summary isn't enough, the original content is one `engram recall` away — decompressed, decrypted, verified, and promoted back to hot tier.
+
+AI is here to stay. Secure memory persistence at scale — preventing context drift, protecting against HNDL, and enabling LLMs to reference back to verified ground truth — is the next big infrastructure problem. Engram is a first step.
 
 No additional setup needed to expand memory. Run `engram init` (auto-detects your AI assistants), then `engram run` (compresses and indexes everything). Your AI immediately has access to months of context through the semantic index. The context window didn't get bigger. The memory behind it got smarter.
 

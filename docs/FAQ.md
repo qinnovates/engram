@@ -17,6 +17,15 @@ Raw logs grow forever and have no search, no compression, no integrity verificat
 
 ---
 
+### What is context drift?
+The compounding approximation error when an LLM references compressed or summarized memory instead of original content. Each recall through a lossy representation introduces a small error. Over many references, these errors compound — the model builds confidently on a foundation that has drifted from the original.
+
+Engram mitigates context drift two ways:
+1. **Merkle integrity** — proves the recalled artifact is bit-for-bit identical to what was stored. The drift may happen in the summary, but the original is always recoverable and provably intact.
+2. **Tiered recall** — summaries serve 80% of queries (fast, approximate). When precision matters, `engram recall` decompresses the original content. The original is the anchor that prevents drift from compounding indefinitely.
+
+---
+
 ## The Four Tiers
 
 ### How do the tiers work?
