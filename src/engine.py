@@ -159,6 +159,13 @@ class TieringEngine:
         except Exception:
             pass  # Sidecar not available — Merkle ops will be no-ops
 
+        # Activation graph — co-occurrence tracking + spreading activation (Layer 3+4)
+        # Lives entirely in sidecar memory. Never persisted to disk.
+        self._activation = None
+        if self._vault_client:
+            from .cograph import CoGraph
+            self._activation = CoGraph(self._vault_client)
+
         # Audit logging — disabled by default, opt-in via config
         self._audit = None
         if config.audit_log:
@@ -181,7 +188,11 @@ class TieringEngine:
             self._index_crypto.lock()
 
     def __del__(self) -> None:
-        """Auto-lock index on garbage collection if encryption is enabled."""
+        """Auto-flush activation graph and lock index on garbage collection."""
+        try:
+            self.flush_activation_session()
+        except Exception:
+            pass
         try:
             self.lock_index()
         except Exception:
@@ -864,6 +875,11 @@ class TieringEngine:
         self.metadata.touch(original_path)
         self.index.update_tier(original_path, Tier.HOT.value)
         self._log("recall", tier=meta.tier, artifact_hash=meta.sha256 or "")
+
+        # Layer 3: Record access for co-occurrence tracking
+        if self._activation and meta.sha256:
+            self._activation.record_access(meta.sha256)
+
         self.metadata.save()
         self.index.save()
 
@@ -906,6 +922,23 @@ class TieringEngine:
         Returns list of ArtifactSummary objects matching the query.
         """
         return self.index.search(query, max_results)
+
+    def get_related(self, sha256_hex: str, depth: int = 2, top_k: int = 3) -> list[dict]:
+        """Get related artifacts via spreading activation (Layer 4).
+
+        Returns list of {"hash": "...", "score": 0.85} dicts.
+        """
+        if not self._activation:
+            return []
+        return self._activation.get_related(sha256_hex, depth, top_k)
+
+    def flush_activation_session(self) -> None:
+        """End the current activation session — create co-occurrence edges.
+
+        Call at the end of each context-build or recall batch.
+        """
+        if self._activation:
+            self._activation.flush_session()
 
     def status(self) -> dict:
         """Return current tier distribution, compression stats, and index stats."""

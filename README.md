@@ -221,7 +221,9 @@ engram encrypt-setup                              # generate keys + store in Key
 
 All thresholds configurable. Choose 2-tier (simple) or 4-tier (full) during setup.
 
-**Hybrid search.** Every artifact is indexed with keywords, embeddings, LSH hashes, and HNSW graph entries before compression. Search uses a 6-layer retrieval stack: keyword lookup, LSH hash tables, HNSW nearest-neighbor graphs, Reciprocal Rank Fusion (BM25 + vector), optional reranking, and summary output. The index (~1 MB keywords + ~10 MB embeddings for 10K artifacts) is always loaded, never compressed. Search across all tiers without decompressing anything. Summaries load at 10-20% of token cost. Full recall on demand.
+**Hybrid search + CoGraph.** Every artifact is indexed with keywords, embeddings, LSH hashes, and HNSW graph entries before compression. Search uses a 6-layer retrieval stack: keyword lookup, LSH hash tables, HNSW nearest-neighbor graphs, Reciprocal Rank Fusion (BM25 + vector), optional reranking, and summary output. The index (~1 MB keywords + ~10 MB embeddings for 10K artifacts) is always loaded, never compressed. Search across all tiers without decompressing anything. Summaries load at 10-20% of token cost. Full recall on demand.
+
+**CoGraph — associative recall.** When you recall one artifact, CoGraph automatically surfaces related ones. Layer 3 (co-occurrence) tracks which artifacts are recalled together using PPMI edge weighting. Layer 4 (spreading activation) propagates through the graph via weighted BFS — like the brain's spreading activation network (Collins & Loftus 1975). The graph lives entirely in the Rust sidecar's mlocked memory — never written to disk. Ephemeral by design: no persistence means no attack surface at rest. ~7 MB worst case at 10K artifacts.
 
 **Everything local.** No data leaves your machine. No telemetry. No cloud dependency. Zero network calls. Embedding model (`all-MiniLM-L6-v2`, ~80 MB) runs entirely in-process on CPU — no external API, no cloud inference. HNSW and LSH indexes operate on these local embeddings. Without the embedding model, keyword search still works.
 
@@ -317,12 +319,15 @@ For the full detailed walkthrough of how every component works — registration,
 
 ```
 engram/
-├── sidecar/                        # Rust crypto + Merkle-Index sidecar (491 KB binary)
+├── sidecar/                        # Rust crypto + Merkle-Index + CoGraph sidecar (685 KB binary)
 │   ├── Cargo.toml
 │   └── src/
 │       ├── main.rs                 # Protocol handler, security hardening (mlockall, zero core dumps)
 │       ├── merkle.rs               # SHA3-256 Merkle tree + inverted keyword index + HMAC seal
+│       ├── cograph.rs              # CoGraph: co-occurrence tracking + spreading activation (Layer 3+4)
+│       ├── simhash.rs              # SimHash fingerprinting for semantic deduplication
 │       ├── crypto.rs               # ML-KEM-768 + X25519 + AES-256-GCM (NIST-only)
+│       ├── keystore.rs             # Cross-platform key management
 │       └── keychain.rs             # macOS Security.framework integration
 ├── src/                            # Python: orchestration, CLI, search
 │   ├── engine.py                   # Tiering engine (scan → index → tier → recall)
@@ -336,6 +341,7 @@ engram/
 │   ├── hybrid_search.py            # Reciprocal rank fusion (keyword + vector)
 │   ├── lookup_tables.py            # LSH hash tables + Product Quantization codebook
 │   ├── envelope.py                 # Per-artifact envelope encryption (DEK per file)
+│   ├── cograph.py                  # CoGraph client (co-occurrence + spreading activation)
 │   ├── vault.py                    # Python client for Rust sidecar
 │   ├── index_crypto.py             # Index bundle encryption (lock/unlock)
 │   ├── encryption.py               # Encryption orchestration
@@ -356,7 +362,8 @@ engram/
 │   ├── SPATIAL-EXTENSION.md        # Spot spatial memory integration
 │   ├── KEY-STORAGE-GUIDE.md        # Key management (Keychain, Vault, YubiKey)
 │   └── blog-post.md                # Launch blog post
-├── tests/                          # 141 tests
+├── tests/                          # 171 tests (+ 18 Rust)
+│   ├── test_activation.py          # CoGraph: unit, mock, sidecar integration (30 tests)
 │   ├── test_merkle.py              # Merkle tree via Rust sidecar
 │   ├── test_spatial.py             # Spatial memory extension
 │   ├── benchmark_retrieval.py      # Retrieval quality evaluation (Recall@k, MRR)
@@ -385,7 +392,7 @@ engram/
 |----------|----------|
 | **[FAQ](docs/FAQ.md)** | 30+ questions: Merkle trees, Matryoshka embeddings, sidecar, PQC, performance, security |
 | **[Architecture](docs/ARCHITECTURE.md)** | Full technical deep dive: registration, tiers, compression, search, encryption, audit |
-| **[v2 Architecture](docs/ENGRAM-V2-ARCHITECTURE.md)** | Brain-informed design, quorum-reviewed: verified summaries, section recall, activation graph |
+| **[v2 Architecture](docs/ENGRAM-V2-ARCHITECTURE.md)** | Brain-informed design, quorum-reviewed: verified summaries, section recall, CoGraph |
 | **[Merkle-Index Spec](docs/MERKLE-INDEX-SPEC.md)** | Merkle tree as search accelerator: measured 400x lookup improvement, sidecar protocol |
 | **[Architecture Proposal](docs/ARCHITECTURE-PROPOSAL.md)** | Full v2 proposal: system diagrams, data flows, performance model, implementation strategy |
 | **[Spatial Extension](docs/SPATIAL-EXTENSION.md)** | Spot integration: tiered spatial memory, NSP peer sharing, QIF AI0 stack |
@@ -395,7 +402,7 @@ engram/
 
 ## Security
 
-- 10 rounds of security review (red team, crypto, GRC, supply chain, OWASP, embedding injection, index encryption, lookup table integrity, hybrid search fuzzing)
+- 11 rounds of security review (red team, crypto, GRC, supply chain, OWASP, embedding injection, index encryption, lookup table integrity, hybrid search fuzzing, CoGraph audit)
 - Rust crypto sidecar — keys never in Python
 - PQ encryption (ML-KEM-768 + X25519 hybrid)
 - Per-artifact DEKs in envelope mode

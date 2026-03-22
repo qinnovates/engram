@@ -100,6 +100,10 @@ class VaultClient:
 
     def _send(self, command: str) -> str:
         """Send a command to the sidecar and return the response."""
+        # Final defense against protocol injection — no caller should pass these,
+        # but this catches future mistakes at the lowest level
+        if '\n' in command or '\r' in command or '\0' in command:
+            raise EncryptionError("Protocol injection blocked: command contains control characters")
         proc = self._ensure_running()
         try:
             proc.stdin.write(command + "\n")

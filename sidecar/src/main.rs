@@ -27,6 +27,12 @@
 //!   INDEX_LOOKUP <hex_hash>                  -> OK <json_result> | OK null
 //!   INDEX_STATS                              -> OK <json_stats>
 //!   INDEX_SEAL_KEY <hex_key_material>        -> OK (derives seal key via HKDF)
+//!   GRAPH_RECORD <hex_hash>                  -> OK
+//!   GRAPH_FLUSH                               -> OK
+//!   GRAPH_ACTIVATE <hex_hash> [depth] [top_k] -> OK <json_results>
+//!   GRAPH_KEYWORD_EDGE <hash_a> <hash_b> <j>  -> OK
+//!   GRAPH_STATS                               -> OK <json_stats>
+//!   GRAPH_RESET                               -> OK
 //!   PING                                     -> PONG
 //!   QUIT                                     -> BYE
 
@@ -35,6 +41,7 @@ use std::io::{self, BufRead, Write};
 use std::path::Path;
 use zeroize::Zeroize;
 
+mod cograph;
 mod crypto;
 mod keystore;
 mod merkle;
@@ -45,6 +52,7 @@ const MAX_FILE_SIZE: u64 = 256 * 1024 * 1024;
 use std::sync::Mutex;
 static MERKLE_INDEX: Mutex<Option<merkle::MerkleIndex>> = Mutex::new(None);
 static SIMHASH_INDEX: Mutex<Option<simhash::SimHashIndex>> = Mutex::new(None);
+static COGRAPH: Mutex<Option<cograph::CoGraph>> = Mutex::new(None);
 
 fn with_simhash<F, R>(f: F) -> R
 where
@@ -53,6 +61,22 @@ where
     let mut guard = SIMHASH_INDEX.lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_none() {
         *guard = Some(simhash::SimHashIndex::new());
+    }
+    f(guard.as_mut().unwrap())
+}
+
+fn with_graph<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut cograph::CoGraph) -> R,
+{
+    let mut guard = COGRAPH.lock().unwrap_or_else(|e| {
+        // Mutex poisoned (panic during prior operation) — discard corrupt state
+        let mut g = e.into_inner();
+        *g = None;
+        g
+    });
+    if guard.is_none() {
+        *guard = Some(cograph::CoGraph::new());
     }
     f(guard.as_mut().unwrap())
 }
@@ -297,6 +321,41 @@ fn main() {
                     let fp = simhash::compute(rest);
                     format!("OK {}", simhash::hex_encode(&fp))
                 }
+            }
+
+            // ── Activation graph commands (Layer 3 + 4) ──
+
+            "GRAPH_RECORD" => {
+                // Record artifact access in current session
+                if rest.is_empty() {
+                    "ERROR Usage: GRAPH_RECORD <hex_hash>".to_string()
+                } else {
+                    handle_graph_record(rest)
+                }
+            }
+            "GRAPH_FLUSH" => {
+                // End session — create co-occurrence edges for all pairs
+                with_graph(|g| g.flush_session());
+                "OK".to_string()
+            }
+            "GRAPH_ACTIVATE" => {
+                // Spreading activation from seed artifact
+                if rest.is_empty() {
+                    "ERROR Usage: GRAPH_ACTIVATE <hex_hash> [depth] [top_k]".to_string()
+                } else {
+                    handle_graph_activate(rest)
+                }
+            }
+            "GRAPH_KEYWORD_EDGE" => {
+                // Add keyword overlap edge
+                handle_graph_keyword_edge(rest)
+            }
+            "GRAPH_STATS" => {
+                handle_graph_stats()
+            }
+            "GRAPH_RESET" => {
+                with_graph(|g| g.reset());
+                "OK".to_string()
             }
 
             _ => "ERROR Unknown command".to_string(),
@@ -720,6 +779,87 @@ fn handle_keygen(tier: &str) -> String {
         Ok(()) => format!("OK {}", pubkey_hex),
         Err(e) => format!("ERROR {}", e),
     }
+}
+
+// ── Activation graph handlers ──
+
+fn handle_graph_record(hex: &str) -> String {
+    match merkle::hex_decode(hex) {
+        Ok(bytes) if bytes.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            with_graph(|g| g.record_access(&arr));
+            "OK".to_string()
+        }
+        Ok(_) => "ERROR Expected 64-char hex (32 bytes)".to_string(),
+        Err(e) => format!("ERROR {}", e),
+    }
+}
+
+fn handle_graph_activate(rest: &str) -> String {
+    let parts: Vec<&str> = rest.split_whitespace().collect();
+    if parts.is_empty() {
+        return "ERROR Usage: GRAPH_ACTIVATE <hex_hash> [depth] [top_k]".to_string();
+    }
+
+    let hash = match merkle::hex_decode(parts[0]) {
+        Ok(bytes) if bytes.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            arr
+        }
+        _ => return "ERROR Invalid hash".to_string(),
+    };
+
+    let depth = parts.get(1).and_then(|s| s.parse::<u8>().ok()).unwrap_or(2);
+    let top_k = parts.get(2).and_then(|s| s.parse::<usize>().ok()).unwrap_or(3);
+
+    // Cap depth and top_k to prevent DoS
+    let depth = depth.min(3);
+    let top_k = top_k.min(20);
+
+    let results = with_graph(|g| g.activate(&hash, depth, top_k));
+
+    let json: Vec<String> = results.iter()
+        .map(|(h, score)| format!(
+            r#"{{"hash":"{}","score":{:.4}}}"#,
+            cograph::hex_encode(h), score
+        ))
+        .collect();
+
+    format!("OK [{}]", json.join(","))
+}
+
+fn handle_graph_keyword_edge(rest: &str) -> String {
+    let parts: Vec<&str> = rest.split_whitespace().collect();
+    if parts.len() < 3 {
+        return "ERROR Usage: GRAPH_KEYWORD_EDGE <hash_a> <hash_b> <jaccard>".to_string();
+    }
+
+    let hash_a = match merkle::hex_decode(parts[0]) {
+        Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+        _ => return "ERROR Invalid hash_a".to_string(),
+    };
+    let hash_b = match merkle::hex_decode(parts[1]) {
+        Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+        _ => return "ERROR Invalid hash_b".to_string(),
+    };
+    let jaccard = match parts[2].parse::<f32>() {
+        Ok(j) if (0.0..=1.0).contains(&j) => j,
+        _ => return "ERROR Invalid jaccard (must be 0.0-1.0)".to_string(),
+    };
+
+    with_graph(|g| g.add_keyword_edge(&hash_a, &hash_b, jaccard));
+    "OK".to_string()
+}
+
+fn handle_graph_stats() -> String {
+    let stats = with_graph(|g| g.stats());
+    // Omit buffer_size and total_recalls to prevent session activity side-channel
+    format!(
+        r#"OK {{"nodes":{},"edges":{},"sessions":{}}}"#,
+        stats.node_count, stats.edge_count, stats.total_sessions,
+    )
 }
 
 // ── Hex (no external dep) ──
