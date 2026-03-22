@@ -1,75 +1,56 @@
-# Engram v2 Architecture — Brain-Modeled Real-Time AI Memory
+# Engram v2 Architecture — Brain-Informed Real-Time AI Memory
 
 *Drafted 2026-03-21. Kevin Qi + Claude Opus 4.6.*
+*Reviewed by 5-expert quorum (neuroscientist, distributed systems, AI agent, security, devil's advocate). Revised based on consensus.*
 
 ## The Problem With v1
 
-Engram v1 models the brain's storage tiers correctly. But it models the brain's **retrieval** wrong.
+Engram v1 models the brain's storage tiers well. It models retrieval poorly.
 
-When you remember something, your brain doesn't:
-1. Search an index to find which region stores it
-2. Decompress the entire memory
-3. Load it into working memory
-4. Then use it
+When you remember something, your brain doesn't decompress a file. It reconstructs from cues — the gist arrives instantly, details fill in on demand, and related memories surface automatically. v1 makes Claude do the file system version: search → decompress whole artifact → read. All-or-nothing.
 
-Your brain does:
-1. A **cue** activates related neurons (spreading activation)
-2. **Partial reconstruction** — you get the gist before the details
-3. Details fill in on demand (or don't — that's normal)
-4. **Priming** — related memories pre-activate, so the NEXT recall is faster
-
-Engram v1 makes Claude do the file system version of step 1-2-3-4. It works, but it's slow for cold/frozen tiers and it's all-or-nothing — you either get the full artifact or just the summary. The brain doesn't work that way.
+Three real problems agents hit with v1:
+1. **Recall is all-or-nothing.** Decompress 50KB to find the one 200-byte decision you need.
+2. **No related context.** Recall one artifact, get nothing about related artifacts. Claude has to search separately for each connection.
+3. **No integrity trust.** Claude gets a summary from the index but has no proof it's authentic. Could be stale or corrupted.
 
 ---
 
-## The Brain's Retrieval Model
+## What the Brain Does (and Where the Analogy Stops)
 
-### How the Hippocampus Actually Works
+The hippocampus doesn't store memories. It stores pointers — pattern-separated index codes that reconstruct the original experience from fragments across the neocortex (Teyler & DiScenna 1986).
 
-The hippocampus doesn't store memories. It stores **pointers to memories** — pattern-separated index codes that can reconstruct the original experience from fragments stored across the neocortex.
+| Brain Process | Engram v2 |
+|---|---|
+| Hippocampal pattern match | Semantic search + HNSW |
+| Pattern completion (gist first) | Verified summary → selective section recall |
+| Spreading activation | Activation graph auto-returns related artifacts |
+| Priming | Session-topic analysis pre-warms search index |
+| Reconsolidation | Keyword update on access (deferred — needs bounds) |
 
-| Brain Component | Current Engram | Engram v2 |
-|----------------|---------------|-----------|
-| **Working memory (PFC)** | Hot tier (full content) | Same — current session context |
-| **Hippocampal index** | Semantic index (keywords + embeddings) | **Merkle-indexed semantic graph** — every summary has a proof |
-| **Pattern completion** | `engram recall` (decompress whole artifact) | **Progressive reconstruction** — summary → sections → full, on demand |
-| **Spreading activation** | None | **Activation graph** — recalling one artifact pre-warms related artifacts |
-| **Memory consolidation** | `engram run` (compress by age) | **Active consolidation** — restructure, extract decisions, build cross-links |
-| **Priming** | None | **Predictive pre-fetch** — session topic pre-warms likely artifacts |
-| **Reconsolidation** | None | **Update on access** — recalled memories get re-indexed with new context |
+These are **design analogies** that inform architecture decisions. They are not algorithmic equivalences. The brain reconstructs from noisy distributed traces via attractor dynamics. Engram decompresses structured data from deterministic storage. The functional outcome (partial cue → useful result) is shared. The mechanism is completely different.
 
-### The Key Insight: Search IS Recall
-
-In the brain, searching for a memory and recalling it are the same operation. The search cue triggers partial activation which IS the memory (at low fidelity). More attention = more detail fills in.
-
-In Engram v1, search and recall are separate operations with different latency:
-```
-engram search "auth refactor"     → 10ms (returns summary)
-engram recall ~/.claude/session.md → 500ms-5s (decompresses everything)
-```
-
-In Engram v2, they're the same operation with progressive fidelity:
-```
-engram recall "auth refactor"
-  → 5ms:  matched 3 artifacts, returning verified summaries
-  → 20ms: expanding top match with section headers + key decisions
-  → 50ms: streaming relevant sections (only the auth parts, not the whole session)
-  → full: complete decompressed artifact (only if explicitly requested)
-```
+What the brain does that Engram v2 still doesn't model:
+- **Interference** — competing memories actively degrade each other. Engram treats artifacts as independent.
+- **Schema extraction** — sleep consolidation abstracts patterns over time, not just compresses data.
+- **State-dependent retrieval** — emotional and environmental context modulates recall strength.
+- **Prospective memory** — goal-directed retrieval triggered by environmental cues.
 
 ---
 
-## Architecture
+## Architecture (Ordered by Implementation Priority)
 
-### 1. Merkle-Verified Summaries (Trust Without Decompressing)
+### 1. Merkle-Verified Summaries
 
-**Problem:** Claude gets a summary from the semantic index, but has no proof the summary accurately represents the compressed artifact. The summary could be stale, corrupted, or fabricated.
+**Status: BUILD FIRST. Low cost, Rust sidecar already exists.**
 
-**Solution:** Every summary in the semantic index gets its own Merkle leaf, alongside the artifact's content leaf. The summary leaf is linked to the content leaf. Claude can verify the summary is authentic via Merkle proof without decompressing the content.
+**Problem:** Claude gets a summary from the semantic index but has no proof it accurately represents the compressed artifact. The summary could be stale, corrupted, or fabricated.
+
+**Solution:** Every summary in the semantic index gets its own Merkle leaf, linked to the artifact's content leaf. Claude verifies in <1ms via the Rust sidecar.
 
 ```
 Merkle Tree:
-          Root
+          Root (SHA3-256)
          /    \
    Content     Summaries
    /    \      /      \
@@ -78,186 +59,197 @@ Merkle Tree:
            (linked to Art1, Art2)
 ```
 
-**Result:** Claude trusts the summary. No decompression needed for 80% of recall operations. Merkle proof verifies in microseconds via the Rust sidecar.
+Claude trusts the summary. No decompression needed for most recall operations. Proof verification is constant-time in Rust.
 
-### 2. Progressive Reconstruction (Partial Recall)
+**Implementation:**
+- [ ] Add summary hash to `ArtifactSummary` dataclass in `context.py`
+- [ ] On `engram scan`: hash each summary, add as Merkle leaf via sidecar
+- [ ] On `engram recall` / `engram search`: return Merkle proof dict alongside summary
+- [ ] Claude hook: verify proof before injecting recalled content into prompt
 
-**Problem:** Cold/frozen recall is all-or-nothing. Decompress 50KB to find the one 200-byte decision you need.
+### 2. Selective Section Decompression
 
-**Solution:** Structure artifacts with a header section that survives compression:
+**Status: BUILD SECOND. Simple approach first, frame-per-section deferred.**
 
-```
-Artifact layout (pre-compression):
-┌─────────────────────────────────┐
-│ HEADER (never stripped)         │
-│   - Summary (1-2 sentences)     │
-│   - Key decisions (bullet list) │
-│   - Section index               │
-│   - Merkle leaf hash            │
-├─────────────────────────────────┤
-│ SECTIONS (independently         │
-│   addressable after compress)   │
-│   [0] Context and background    │
-│   [1] Discussion                │
-│   [2] Decisions and outcomes    │
-│   [3] Code changes              │
-│   [4] Open questions            │
-└─────────────────────────────────┘
-```
+**Problem:** Cold/frozen recall is all-or-nothing. Decompress 50KB to find one section.
 
-Compression pipeline change: use **zstd frame-level compression** — each section is a separate zstd frame within the same file. Decompress frame 0 (header) = instant. Decompress frame 2 (decisions) = skip frames 0-1. No need to decompress the whole artifact.
+**Solution (simple, validated by quorum):** Decompress the full artifact, split on section headers, return only the requested section. No compression format changes needed.
 
-```python
+```bash
 # v1: all or nothing
-content = engram.recall(path)  # 500ms, returns 50KB
+engram recall ~/.claude/sessions/auth-refactor.jsonl  # returns 50KB
 
-# v2: progressive
-header = engram.recall(path, depth="header")    # 5ms, returns 500B
-decisions = engram.recall(path, section=2)       # 20ms, returns 2KB
-full = engram.recall(path, depth="full")         # 500ms, returns 50KB
+# v2: selective
+engram recall ~/.claude/sessions/auth-refactor.jsonl --section decisions  # returns 2KB
+engram recall ~/.claude/sessions/auth-refactor.jsonl --section code       # returns 5KB
 ```
 
-### 3. Activation Graph (Spreading Activation)
+**Why not frame-per-section zstd:**
+The quorum's distributed systems engineer identified three problems:
+1. Compression ratio degrades 30-40% when sections are compressed independently (dictionary resets at frame boundaries)
+2. Python-zstandard doesn't expose the `ZSTD_seekable_*` API for seekable frame decompression
+3. Would require a custom container format or Rust sidecar extensions
 
-**Problem:** Recalling one artifact gives you no information about related artifacts. Claude has to search separately for each connection.
+Simple post-decompression section splitting gets 80% of the value with 10% of the engineering. If real-world latency measurements prove this isn't fast enough, prototype the frame approach then.
 
-**Solution:** Build a weighted edge graph between artifacts based on:
-- Shared keywords (weight = Jaccard similarity)
-- Temporal proximity (sessions within 24h of each other)
-- Explicit references (file paths mentioned in another session)
-- Embedding cosine similarity (already computed, stored in HNSW)
-
+**Section identification:**
+```python
+# Standard section headers in Engram artifacts
+SECTION_PATTERNS = {
+    "context": r"^##?\s*(Context|Background)",
+    "decisions": r"^##?\s*(Decision|Outcome|Conclusion)",
+    "code": r"^##?\s*(Code|Implementation|Changes)",
+    "questions": r"^##?\s*(Question|Open|TODO|Next)",
+    "discussion": r"^##?\s*(Discussion|Conversation|Exchange)",
+}
 ```
-Session about auth refactor
-    ├── 0.8 → Session about API security (shared: "auth", "token", "middleware")
-    ├── 0.6 → Session about database migration (same day, mentioned auth table)
-    ├── 0.3 → Session about deployment (mentioned auth service restart)
-    └── 0.1 → Session about UI redesign (low similarity, same week)
-```
 
-When Claude recalls the auth refactor session, Engram automatically returns the top-3 related sessions' summaries. No extra search needed. The graph pre-computes what's related — like the hippocampus pre-activating associated memories.
+**Implementation:**
+- [ ] Add `--section` flag to `engram recall` CLI
+- [ ] Add `section_extract(content: str, section: str) -> str` utility
+- [ ] Return Merkle proof for the full artifact (section is a substring, artifact is verified)
+
+### 3. Activation Graph (Simple Version)
+
+**Status: BUILD THIRD. Co-occurrence first, weighted multi-signal later.**
+
+**Problem:** Recalling one artifact gives no information about related artifacts. Claude has to search separately for each connection.
+
+**Solution (phased):**
+
+**Phase A — co-occurrence logging (build now):**
+When artifacts are recalled in the same session, record an edge. When artifacts share 3+ keywords, record an edge. Return top-3 related summaries with every recall.
 
 ```python
 result = engram.recall("auth refactor")
 # Returns:
-#   .content = the auth refactor session (progressive)
+#   .content = the recalled section
 #   .related = [
-#     {summary: "API security review", relevance: 0.8, proof: <merkle>},
-#     {summary: "DB migration - auth tables", relevance: 0.6, proof: <merkle>},
+#     {path: "api-security.jsonl", summary: "...", edge: "co-recalled 3x"},
+#     {path: "db-migration.jsonl", summary: "...", edge: "shared: auth, token, middleware"},
 #   ]
-#   .proof = <merkle proof for this artifact>
+#   .proof = <merkle proof>
 ```
 
-### 4. Predictive Pre-Fetch (Priming)
+**Phase B — weighted multi-signal (build when data exists):**
+Add embedding cosine similarity and temporal proximity as edge weights. Requires tuning — defer until co-occurrence data reveals what "related" actually means in practice.
 
-**Problem:** Cold/frozen recall is slow because decompression happens on-demand. Claude waits 500ms-5s while the user waits.
+**Storage:** SQLite, not JSON. At 10K artifacts with ~10 edges each, a 100K-edge adjacency list needs efficient lookup and incremental updates. JSON parse of 10MB on every recall is a bottleneck.
 
-**Solution:** At session start, analyze the conversation topic and pre-warm likely-needed artifacts.
-
+```sql
+CREATE TABLE edges (
+    source_hash TEXT,
+    target_hash TEXT,
+    weight REAL,
+    edge_type TEXT,  -- 'co-recalled', 'shared-keywords', 'temporal', 'embedding'
+    last_updated REAL,
+    PRIMARY KEY (source_hash, target_hash)
+);
+CREATE INDEX idx_source ON edges(source_hash);
 ```
-SessionStart hook runs → engram context --query "current topic"
-  → Top 5 cold/frozen artifacts by relevance score
-  → Background: decompress headers + section indices for all 5
-  → Store in a warm cache (in-memory, expires after session)
-  → When Claude actually needs one: header already in memory, 0ms
-```
 
-This is exactly how the brain works. Walking into a kitchen primes food-related memories before you consciously think about cooking. The context (location/topic) triggers anticipatory activation.
+**Implementation:**
+- [ ] Create `activation.py` with SQLite-backed edge store
+- [ ] Record co-occurrence edges on `engram recall`
+- [ ] Record keyword overlap edges on `engram scan`
+- [ ] Return top-3 related summaries in recall response
+- [ ] Prune edges older than 90 days or below weight threshold
+
+**Quorum security note:** The activation graph encodes artifact relationships. Even encrypted, file size reveals edge count. For high-security deployments, pad the SQLite database to a fixed size.
+
+---
+
+## Deferred (Measure Before Building)
+
+### 4. Predictive Pre-Fetch
+
+**Status: DEFERRED. Measure actual cold/frozen recall latency first.**
+
+The quorum's devil's advocate raised a valid point: LLM inference takes 1-10 seconds. A 500ms cold recall at session start is not a meaningful bottleneck in practice. Pre-fetching adds complexity and breaks least-privilege by eagerly decrypting cold tier content.
+
+**Build condition:** If real-world measurement shows cold/frozen recall adds >1s perceived latency in agent sessions, implement pre-fetch with an explicit "unlock session" ceremony for encrypted tiers.
 
 ### 5. Reconsolidation (Update on Access)
 
-**Problem:** When Claude recalls a 3-month-old session about auth, the keywords and summary reflect what was important 3 months ago, not what's relevant now. The next search for auth-related content might rank it lower because the old index entry doesn't have today's terminology.
+**Status: DEFERRED. Needs three problems solved first.**
 
-**Solution:** When an artifact is recalled, Engram re-indexes it with the current session's context:
+The concept (re-indexing recalled artifacts with current context so they're easier to find in future similar contexts) is sound. But:
 
-```
-Original keywords (3 months ago): ["auth", "middleware", "express", "jwt"]
-Current session context: ["oauth2", "refresh tokens", "session management"]
+1. **Semantic drift.** Blending embeddings (0.7 original + 0.3 current) over many recalls causes the embedding to drift from the artifact's actual content. Needs a maximum reconsolidation count or decay model.
+2. **Metadata side channel.** Re-indexed keywords encode information about the CURRENT session into HISTORICAL artifact metadata. An adversary accessing the index can infer recent activity by examining which old artifacts have been reconsolidated.
+3. **Concurrent access.** Two sessions reconsolidating the same artifact simultaneously creates a race condition on the index.
 
-After reconsolidation:
-Updated keywords: ["auth", "middleware", "express", "jwt", "oauth2", "refresh tokens"]
-Updated embedding: blended (0.7 * original + 0.3 * current context)
-Updated summary: includes note about relevance to current oauth2 work
-```
+**Build condition:** When the activation graph generates enough data to demonstrate that old artifacts are genuinely unfindable with current search, and after concurrent access is solved.
 
-This mirrors how the brain's reconsolidation works: every time you recall a memory, it's subtly rewritten with your current context. The memory becomes easier to find in the future for similar contexts.
+---
+
+## Missing Sections (Identified by Quorum)
+
+### Concurrent Access
+
+Two Claude Code sessions (or subagents) running simultaneously is common. Both hit Engram's metadata registry, semantic index, and activation graph.
+
+**Current v1 state:** `atomic_write_text()` prevents file corruption on write. But no file locking means two concurrent `engram run` operations can produce inconsistent state.
+
+**v2 requirement:** SQLite for the activation graph solves concurrent reads. For writes: either file-level locking (fcntl on Unix) or migrate the metadata registry to SQLite as well. This is a prerequisite for the activation graph, not an afterthought.
+
+### Why Engram Remains Valuable When Context Windows Grow
+
+Context windows will hit 10M tokens. That makes raw capacity less scarce. It does NOT solve:
+
+1. **Finding the right context.** 10M tokens of everything is worse than 32K tokens of the right thing. Semantic search, keyword index, and activation graph are more valuable when the haystack is bigger.
+2. **Cost.** Loading 40MB of text into every prompt is expensive. Engram's tiered compression reduces what needs to be loaded. Even at 10M tokens, you don't want to pay for 10M on every API call.
+3. **Integrity.** A 10M context window doesn't tell you if the content is real. Merkle verification does. This becomes MORE important as context gets bigger — more data means more surface area for hallucination.
+4. **Privacy.** A bigger window means more sensitive data loaded per prompt. Engram's tier-gated encryption ensures only relevant, authorized content enters the context.
+
+Engram's value shifts from "fit context into a small window" to "find, verify, and secure context within a large window." The compression becomes less important. The search, integrity, and privacy become more important.
 
 ---
 
 ## Implementation Phases
 
-### Phase 1: Verified Summaries + Progressive Recall
-- [ ] Merkle leaf for every summary in semantic index
-- [ ] `engram recall --depth header|section|full`
-- [ ] Zstd frame-per-section compression in pipeline
-- [ ] CLI returns Merkle proof with every recall
-- [ ] Claude hook: verify proof before trusting recalled content
+### Phase 1 (Build Now)
+- [ ] Merkle-verified summaries (summary leaf + proof in recall response)
+- [ ] Selective section decompression (`engram recall --section decisions`)
+- [ ] Co-occurrence edge logging in SQLite
+- [ ] Related artifacts returned with recall (top-3)
+- [ ] Concurrent access: file locking for metadata writes
 
-### Phase 2: Activation Graph
-- [ ] Build edge graph from keyword Jaccard + temporal + embedding similarity
-- [ ] Store as adjacency list in `activation-graph.json`
-- [ ] `engram recall` returns top-3 related summaries automatically
-- [ ] Graph updates on every `engram scan` (new sessions add edges)
-- [ ] Prune edges below threshold (prevent graph explosion)
+### Phase 2 (After Phase 1 Deployed + Measured)
+- [ ] Weighted activation graph (embedding similarity + temporal edges)
+- [ ] Latency measurement harness for cold/frozen recall in real sessions
+- [ ] Predictive pre-fetch (only if measurements justify it)
 
-### Phase 3: Predictive Pre-Fetch
-- [ ] SessionStart hook calls `engram prefetch --topic "..."`
-- [ ] Background decompression of top-N cold/frozen headers
-- [ ] In-memory warm cache (expires on session end)
-- [ ] Measure: average recall latency before and after pre-fetch
-
-### Phase 4: Reconsolidation
-- [ ] On recall: blend current context into artifact's keywords and embedding
-- [ ] Track "recall count" and "last recalled context" per artifact
-- [ ] Frequently-recalled artifacts resist tier demotion (they're important)
-- [ ] Implement "importance score" = f(recall_count, recency, relevance)
+### Phase 3 (After Concurrent Access Solved)
+- [ ] Reconsolidation with drift bounds and side channel isolation
+- [ ] Frame-per-section compression (only if section splitting latency is proven insufficient)
+- [ ] Graph padding for high-security deployments
 
 ---
 
-## Latency Targets
-
-| Operation | v1 | v2 Target |
-|-----------|-----|-----------|
-| Search (summary) | 10ms | 5ms (Merkle-verified) |
-| Recall header | N/A (all-or-nothing) | 5ms |
-| Recall section | N/A | 20ms |
-| Recall full (hot) | instant | instant |
-| Recall full (warm) | 10ms | 10ms |
-| Recall full (cold) | 500ms | 50ms (pre-fetched) or 200ms (frame-skip) |
-| Recall full (frozen) | 5s | 500ms (pre-fetched) or 2s (frame-skip) |
-| Related artifacts | N/A (manual search) | 0ms (returned with recall) |
-| Merkle verify | N/A | <1ms (Rust sidecar) |
-
-The goal: **cold recall feels like warm recall** because either (a) the header was pre-fetched, or (b) you only need the header anyway.
-
----
-
-## Crypto Integration
+## Crypto Model (Unchanged)
 
 All v2 features maintain the existing PQC security model:
 
-| Operation | Crypto |
-|-----------|--------|
-| Summary Merkle proof | SHA3-256, verified in Rust sidecar |
-| Header decompression | AES-256-GCM decrypt (per-section if encrypted) |
-| Pre-fetch cache | Decrypted in-memory only, never persisted to disk |
-| Activation graph | Stored encrypted (contains artifact relationships) |
-| Reconsolidation | Re-encrypted after keyword/embedding update |
-| Root seal | HMAC-SHA3-256 with ML-KEM-768 derived key |
+| Layer | Algorithm | NIST Standard |
+|-------|-----------|---------------|
+| Tree hashes | SHA3-256 | FIPS 202 |
+| Root seal | HMAC-SHA3-256 | FIPS 198-1 + FIPS 202 |
+| Seal key | ML-KEM-768 + HKDF | FIPS 203 + SP 800-56C |
+| Artifact encryption | AES-256-GCM | FIPS 197 + SP 800-38D |
+| Key encapsulation | ML-KEM-768 + X25519 hybrid | FIPS 203 |
+| All crypto operations | Rust sidecar | mlocked, zero core dumps |
 
 ---
 
-## The Neuroscience Parallel
+## Quorum Review Summary
 
-| Brain Process | Engram v2 Implementation | Latency |
-|--------------|-------------------------|---------|
-| **Cue → hippocampal pattern match** | Semantic search + HNSW | 5ms |
-| **Pattern completion (gist)** | Merkle-verified summary return | 5ms |
-| **Detail filling (cortical reactivation)** | Progressive section decompression | 20-200ms |
-| **Spreading activation** | Activation graph auto-returns related | 0ms (pre-computed) |
-| **Priming** | SessionStart pre-fetch of cold/frozen headers | Background |
-| **Reconsolidation** | Re-index with current context on recall | Background |
-| **Forgetting (interference)** | Low-importance artifacts demote faster | On `engram run` |
-| **Sleep consolidation** | Nightly `engram run` + graph rebuild | Cron |
+*5-expert review conducted 2026-03-21.*
 
-This isn't a metaphor. It's the same algorithm, implemented on different hardware.
+| Feature | Neuroscientist | Dist. Systems | Agent Dev | Security | Devil's Advocate | Consensus |
+|---------|:-:|:-:|:-:|:-:|:-:|---|
+| Merkle summaries | APPROVE | APPROVE | APPROVE | APPROVE | APPROVE | **BUILD** |
+| Section decompression | APPROVE | REVISE | REVISE | REVISE | REJECT complex | **BUILD (simple)** |
+| Activation graph | REVISE | REVISE | APPROVE | REVISE | REVISE | **BUILD (co-occurrence first)** |
+| Predictive pre-fetch | APPROVE | APPROVE | REVISE | REVISE | REJECT | **DEFER (measure first)** |
+| Reconsolidation | REVISE | APPROVE | APPROVE | REVISE | REJECT | **DEFER (solve 3 problems)** |
