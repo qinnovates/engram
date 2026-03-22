@@ -1,25 +1,23 @@
 # Architecture
 
-A SIEM-inspired memory engine for AI assistants. Tiered compression, hybrid search, significance scoring, and integrity verification — designed to reduce token usage and compute cost while keeping years of AI memory searchable.
+A SIEM-inspired memory engine for AI assistants. Designed to manage and locate memory across tiers without wasting tokens and compute reading through everything.
 
 ---
 
 ## Table of Contents
 
 - [Design Philosophy](#design-philosophy)
-- [The SIEM Analogy](#the-siem-analogy)
+- [Architecture Diagram](#architecture-diagram)
+- [The SIEM Mapping](#the-siem-mapping)
 - [Data Flow](#data-flow)
 - [Registration and Indexing](#registration-and-indexing)
-- [Significance Scoring](#significance-scoring)
-- [Tier Transitions](#tier-transitions)
-- [Compression Pipeline](#compression-pipeline)
+- [Tier Model](#tier-model)
+- [Parquet Storage](#parquet-storage)
 - [Search and Retrieval](#search-and-retrieval)
-- [Hybrid Search](#hybrid-search)
-- [Merkle Tree](#merkle-tree)
+- [Integrity (Content Hash + Merkle Tree)](#integrity)
 - [Recall](#recall)
-- [Embedding Architecture](#embedding-architecture)
-- [CoGraph (Associative Recall)](#cograph-associative-recall)
-- [Encryption (Opt-In)](#encryption-opt-in)
+- [Embedding Architecture (Optional)](#embedding-architecture)
+- [Encryption (Opt-In, Deferred)](#encryption)
 - [File Layout](#file-layout)
 - [Protected Paths](#protected-paths)
 
@@ -27,29 +25,104 @@ A SIEM-inspired memory engine for AI assistants. Tiered compression, hybrid sear
 
 ## Design Philosophy
 
-Two principles drive every design decision:
+Initially scoped with encryption from inception — post-quantum (ML-KEM-768), per-artifact keys, Rust sidecar. But Claude didn't know what to do with encrypted files. It couldn't read its own memory. The encryption was secure but useless because the consumer had no way to access the data.
+
+The pivot: stop thinking about this as an encryption problem. Start thinking about it like designing a SIEM — a system that manages and knows where everything is without having to go through all the memory to waste valuable tokens and compute.
+
+Two principles:
 
 1. **Don't recompute what you can store and look up.** Why recompute what the full digits of pi is if you have the answer written on a chalkboard? Rather than recomputing pi from the actual formula, we just know 3.14, it's close enough, it's an estimate. Every retrieval path uses precomputed indexes, summaries, and keyword maps — never raw file scanning.
 
-2. **Search the index, not the data.** Large data warehouses like SIEMs use indexing, compression, and KV stores because when you're dealing with massive data, you can't grep through everything. The index tells you WHERE the answer is. You only open the actual data when you know it's there.
+2. **Search the index, not the data.** Large data warehouses like SIEMs use indexing, compression, and KV stores because when you're dealing with massive data, you can't grep through everything. If your data is stored as Parquet format it'll speed up the time drastically and storing it in a non-linear way while retaining all the necessary details. The index tells you WHERE the answer is. You only open the actual data when you know it's there.
 
 ---
 
-## The SIEM Analogy
+## Architecture Diagram
 
-This engine is modeled after how Splunk, Elasticsearch, and Snowflake handle petabyte-scale log data — not after how RAG systems handle text chunks.
+```
+┌──────────────────────────────────────────────────────────┐
+│  AI ASSISTANTS (Claude, Cursor, ChatGPT)                 │
+│  Read hot files directly. Call myelin8 for everything else│
+└──────┬────────────────────────────────────────┬──────────┘
+       │ MCP (stdio JSON-RPC)                   │ Bash (CLI)
+       ▼                                        ▼
+┌──────────────────────────────────────────────────────────┐
+│  MYELIN8 (single Rust binary)                            │
+│                                                          │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ QUERY ENGINE (search.rs)                           │  │
+│  │  Parse query → tantivy FTS (BM25 + stemming)       │  │
+│  │  → enrich with significance + source labels        │  │
+│  │  → RRF fusion if semantic enabled                  │  │
+│  │  → rank → return summaries (not full content)      │  │
+│  └─────────────────────┬──────────────────────────────┘  │
+│                        │                                  │
+│  ┌─────────────────────▼──────────────────────────────┐  │
+│  │ TIER MANAGER (tiers.rs)                            │  │
+│  │  Knows where every artifact lives.                 │  │
+│  │  Routes recall: tier → decompress → verify → return│  │
+│  │  Manages transitions: hot → warm → cold → frozen   │  │
+│  │  On recall: reset timestamps, Hebbian boost        │  │
+│  └──────┬──────────┬──────────┬──────────┬────────────┘  │
+│         │          │          │          │                │
+│  ┌──────▼───┐ ┌────▼────┐ ┌──▼─────┐ ┌─▼──────┐        │
+│  │   HOT    │ │  WARM   │ │  COLD  │ │ FROZEN │        │
+│  │plaintext │ │Parquet  │ │Parquet │ │Parquet │        │
+│  │  1x      │ │zstd-3   │ │zstd-9  │ │zstd-19 │        │
+│  │ Claude   │ │weekly   │ │monthly │ │quarter │        │
+│  │ reads    │ │batches  │ │batches │ │batches │        │
+│  │ directly │ │         │ │        │ │        │        │
+│  └──────────┘ └─────────┘ └────────┘ └────────┘        │
+│       ▲               on recall:                         │
+│       └───── decompress → verify hash → reset timers ────┘
+│              (no thawed tier — just reset decay clock)    │
+│                                                          │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ INDEX + INTEGRITY (no database, filesystem only)   │  │
+│  │                                                    │  │
+│  │  tantivy        FTS + BM25 + stemming over ALL     │  │
+│  │  (= tsidx)      tokens. Date range queries.        │  │
+│  │                  Tier/significance/label filtering. │  │
+│  │                                                    │  │
+│  │  .meta files    Per-artifact metadata (msgpack).    │  │
+│  │  (= KV store)   Hash, tier, timestamps, scores.    │  │
+│  │                  Content-addressable: store/a3/...  │  │
+│  │                                                    │  │
+│  │  Merkle tree    SHA3-256 over all content hashes.   │  │
+│  │  (= integrity)  Proves memories are real.           │  │
+│  │                  Per-artifact: hash(content)==stored │  │
+│  │                  Whole-system: Merkle root valid    │  │
+│  │                                                    │  │
+│  │  SimHash        Near-duplicate detection at ingest. │  │
+│  │  (= dedup)      256-bit fingerprint, Hamming dist. │  │
+│  └────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
+```
 
-| SIEM Component | What It Does | Myelin8 Equivalent |
+---
+
+## The SIEM Mapping
+
+Every component maps to how enterprise SIEMs handle massive log data:
+
+| Splunk Component | What It Does | Myelin8 Equivalent |
 |---|---|---|
-| **Indexer** | Ingests raw logs, compresses, writes to time-partitioned buckets | `myelin8 add` + `myelin8 run` — user defines sources, engine indexes and compresses |
-| **Buckets** (hot/warm/cold/frozen) | Time-partitioned storage, decreasing access speed | Tiered memory: recent = full text, old = compressed, oldest = columnar |
-| **tsidx** (inverted index) | Knows which terms exist in which bucket WITHOUT reading raw data | Semantic index — keywords, summaries, hashes per artifact |
-| **Bloom filters** | Probabilistic check: "does this bucket contain term X?" Skip buckets that can't match | Merkle tree — existence check + partition routing without decompression |
-| **Search head** | Coordinates queries across indexers, merges results | Hybrid search — FTS + semantic + RRF fusion |
-| **Cluster master** | Manages tier locations, handles decompression transparently | Engine — the AI never sees compressed data, engine returns plaintext |
-| **SmartStore** | Remote cold/frozen storage, cache locally on access | Frozen Parquet tier, `recall` promotes back to hot |
+| **Indexer** | Ingest, parse, compress, write to buckets | `myelin8 add` + `myelin8 run` — user defines sources, engine indexes and compresses |
+| **Buckets** (hot/warm/cold/frozen) | Time-partitioned, decreasing access speed | 4-tier Parquet pipeline (hot = plaintext, warm/cold/frozen = Parquet at increasing zstd levels) |
+| **tsidx** (inverted index) | Know which terms exist without reading data | tantivy — full inverted index over ALL tokens, with stemming and BM25 |
+| **Bloom filters** | Skip buckets that can't match | tantivy segment-level term dictionaries serve same purpose |
+| **journal.gz** | Compressed raw events in each bucket | Parquet files with zstd compression per tier |
+| **Bucket metadata** | Earliest/latest time, event count, state | `.meta` files — content hash, tier, timestamps, significance, original size |
+| **KV Store** | Structured metadata lookups | `.meta` files in content-addressable filesystem (like Git objects) |
+| **Lookup tables** | Search-time enrichment | Significance scores + source labels — enrich every search result with importance and origin |
+| **Cluster master** | Know where everything is, manage tiers, transparent decompression | Tier manager — AI never sees compressed data, engine decompresses and returns plaintext |
+| **SmartStore** | Remote frozen storage, cache on access | Frozen Parquet + recall to hot (reset timestamps, Hebbian boost) |
+| **Eventtypes/tags** | Categorize by meaning | Artifact types (decision, correction, error, routine) + source labels + user pins |
+| **Saved searches** | Precomputed results | Pre-extracted summaries — return 200-token summary, not 10K-token session |
+| **Summary indexing** | Precompute aggregations | Weekly/monthly/quarterly Parquet rollups |
+| **thaweddb** | Restored frozen data, won't re-freeze | Not needed — recall resets timestamps, Hebbian decay handles re-tiering naturally. The AI IS the babysitter. |
 
-The key principle from SIEMs: **the search head never reads raw data.** It queries indexes. It checks filters. It only opens actual data when it knows the answer is there. This is the opposite of what RAG systems do (embed everything, search everything, hope cosine similarity finds it).
+Splunk's "semantic search" isn't vector embeddings — it's field extraction + eventtypes + tags. Structured metadata at ingest time IS the semantic layer. Myelin8 does the same: significance scoring and artifact typing at ingest, not vector search after the fact.
 
 ---
 
@@ -61,301 +134,228 @@ User defines sources:
     myelin8 add ~/projects/_swarm/ --label swarm
 
          │
-    myelin8 run (processes all registered sources)
+    myelin8 run (processes registered sources only)
          │
          ▼
-  ┌─ REGISTRATION ──────────────────────────────────┐
-  │  Content hash │ keyword extraction │ summary     │
-  │  significance scoring │ embedding (if enabled)   │
-  │  SimHash fingerprint (near-duplicate detection)  │
-  └──────────────────────────────────────────────────┘
+  ┌─ REGISTRATION ──────────────────────────────────────┐
+  │  1. SHA-256 content hash (computed once, never changes)
+  │  2. Keyword extraction (ALL tokens, not top-30)
+  │  3. Summary extraction (first heading + paragraph)
+  │  4. Significance scoring (pins + heuristics)
+  │  5. SimHash fingerprint (near-duplicate check)
+  │  6. tantivy index (all metadata + keywords)
+  │  7. Merkle tree leaf (content hash)
+  │  8. Embedding (optional, if enabled)
+  └─────────────────────────────────────────────────────┘
          │
-    myelin8 run (significance × age × idle thresholds)
-         │
-         ▼
-  ┌─ TIER TRANSITIONS ─────────────────────────────┐
-  │  HOT ──significance decays──▶ WARM             │
-  │       ──1 week + idle──▶     WARM              │
-  │  WARM ──1 month──▶ COLD ──3 months──▶ FROZEN   │
-  │                                                 │
-  │  High-significance memories RESIST decay.       │
-  │  Accessed memories BOOST back toward hot.       │
-  └─────────────────────────────────────────────────┘
-         │
-    myelin8 search / myelin8 context
+    myelin8 run (age × idle × significance thresholds)
          │
          ▼
-  ┌─ RETRIEVAL (no decompression needed) ──────────┐
-  │  keyword lookup (FTS) ──┐                      │
-  │  semantic search ───────┼──▶ RRF fusion        │
-  │  Merkle partition check ┘   → return summaries │
-  └────────────────────────────────────────────────┘
+  ┌─ TIER TRANSITIONS ─────────────────────────────────┐
+  │  HOT → WARM:  append to weekly Parquet (zstd-3)     │
+  │  WARM → COLD: roll into monthly Parquet (zstd-9)    │
+  │  COLD → FROZEN: roll into quarterly Parquet (zstd-19)│
+  │                                                      │
+  │  High-significance memories RESIST decay.            │
+  │  Accessed memories get timestamp reset (Hebbian).    │
+  └──────────────────────────────────────────────────────┘
+         │
+    myelin8 search
+         │
+         ▼
+  ┌─ RETRIEVAL (no decompression needed) ───────────────┐
+  │  tantivy FTS (BM25 + stemming) ──┐                  │
+  │  semantic search (optional) ──────┼─▶ RRF fusion    │
+  │                                   │   → rank        │
+  │                                   │   → return      │
+  │  Returns summaries (200 tokens)   │   summaries     │
+  │  NOT full content (10K tokens)    │                  │
+  └─────────────────────────────────────────────────────┘
          │
     myelin8 recall (only when full content needed)
          │
          ▼
-  ┌─ RECALL ─────────────────────────────────────┐
-  │  decompress (pipeline reversal)              │
-  │  → integrity check (content hash)            │
-  │  → decrypt if encrypted (Rust sidecar)       │
-  │  → return to hot tier                        │
-  └──────────────────────────────────────────────┘
+  ┌─ RECALL ─────────────────────────────────────────────┐
+  │  1. Locate artifact via content hash                  │
+  │  2. Read Parquet row (content column only)            │
+  │  3. SHA-256 verify: hash(content) == stored hash      │
+  │     Match? ✓ Content is identical to original         │
+  │     Mismatch? ✗ WARN: drift detected                 │
+  │  4. Write to hot/ as plaintext                       │
+  │  5. Reset last_accessed to NOW                       │
+  │  6. Claude can now Read it directly                  │
+  └──────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Registration and Indexing
 
-When an artifact is first discovered (`myelin8 run`), the engine builds a complete index entry BEFORE any compression. This is the "write once, search many" principle — all the expensive work happens at ingest, not at query time.
+When an artifact is first discovered (`myelin8 run`), the engine builds a complete index entry BEFORE any compression. All expensive work happens at ingest, not at query time.
 
-| Step | What's Created | Purpose |
-|------|---------------|---------|
-| Content hash (SHA-256) | Integrity fingerprint | Dedup, tamper detection, Merkle leaf |
-| Keyword extraction | Top 30 terms by frequency | Full-text search without reading content |
-| Summary | First heading + paragraph (md), field names + count (jsonl) | Token-efficient retrieval — return summary, not full content |
-| Significance score | Heuristic importance weight (0.0 - 1.0) | Determines tier decay rate |
-| SimHash fingerprint | 256-bit semantic fingerprint | Near-duplicate detection (Hamming distance) |
-| Embedding (if enabled) | 384-dim vector via all-MiniLM-L6-v2 | Semantic search for fuzzy/paraphrased queries |
-| HNSW insert (if enabled) | Nearest-neighbor graph entry | Fast approximate vector search |
-| Timestamps | Created, last accessed, last modified | Age + idle calculations for tiering |
-
-Gzip-compressed files (`.jsonl.gz` from Claude subagents) are decompressed in memory for indexing. The file on disk stays compressed.
+| Step | What's Created | Stored In | Purpose |
+|------|---------------|-----------|---------|
+| Content hash | SHA-256 of original plaintext | `.meta` file + Parquet `content_hash` column | Identity — never changes, travels through all tiers |
+| Keyword extraction | ALL tokens (not top-N) | tantivy index | Full-text search without reading compressed data |
+| Summary | First heading + paragraph | tantivy stored field + Parquet `summary` column | Token-efficient retrieval |
+| Significance score | Heuristic weight (0.0–1.0) | `.meta` file + tantivy field | Controls tier decay rate |
+| SimHash | 256-bit semantic fingerprint | `.meta` file | Near-duplicate detection (Hamming distance) |
+| Timestamps | `created_at` (never changes) + `created_date` + `last_accessed` (drives decay) | `.meta` file + tantivy date fields | Temporal search + tier decay |
+| Merkle leaf | Content hash added to binary hash tree | `merkle.bin` | Whole-system integrity |
+| Embedding (optional) | 384-dim vector | tantivy stored field | Semantic similarity search |
 
 ---
 
-## Significance Scoring
+## Tier Model
 
-Human memory is selective because it's useful. We remember corrections, decisions, and novel encounters. We forget routine operations. This engine applies the same principle.
+```
+Hot    = plaintext     Claude reads directly. Never compressed.
+Warm   = Parquet zstd-3   Weekly batches. Column-selective reads.
+Cold   = Parquet zstd-9   Monthly batches. Higher compression.
+Frozen = Parquet zstd-19  Quarterly batches. Maximum compression.
+```
 
-At ingest, each artifact is scored:
+One format for all compressed tiers. One read path. One write path. The tier determines the batch granularity and compression level.
 
-| Signal Detected | Score | Rationale |
-|---|---|---|
-| User correction ("no, not that", "stop", rephrasing) | 0.95 | Corrections change behavior — highest learning signal |
-| User said "remember this" | 1.0 | Explicit instruction to retain |
-| Contains decision language ("we decided", "because", "going with") | 0.85 | Decisions are the most-queried memories |
-| Architectural/design choice | 0.80 | Long-lived, frequently referenced |
-| Error + fix pattern | 0.60 | Valuable but time-limited |
-| New concept first encountered | 0.50 | Novelty signal — may or may not matter later |
-| Routine file read / grep output | 0.10 | Almost never queried again |
-| Tool call boilerplate | 0.05 | Never queried — skip indexing entirely |
+### Transitions
 
-**Hebbian reinforcement:** When a memory is accessed via `search` or `recall`, its significance score increases. Memories that get referenced stay hot. Memories that are never referenced decay through tiers faster.
+Transitions require BOTH age AND idle thresholds:
 
-**Supersession:** When a new decision contradicts an older one ("we changed from PostgreSQL to SQLite"), the older decision's significance drops and the new one inherits the higher score.
-
-This is significance *heuristics* — pattern matching on signal characteristics, not cognitive comprehension. Imperfect but better than treating every token equally.
-
----
-
-## Tier Transitions
-
-Transitions are driven by **significance × age × idle time**, not age alone.
-
-| Transition | Base Age | Base Idle | Modified By |
+| Transition | Age | Idle | Modified By |
 |---|---|---|---|
-| Hot → Warm | 1 week | 3 days | High significance delays transition |
-| Warm → Cold | 1 month | 2 weeks | Accessed memories boost back |
+| Hot → Warm | 1 week | 3 days | High significance delays |
+| Warm → Cold | 1 month | 2 weeks | Access boosts back |
 | Cold → Frozen | 3 months | 1 month | Pinned memories never freeze |
 
-A critical decision from 6 months ago can stay in hot tier if it's still being referenced. A routine grep from yesterday can skip warm and go straight to cold if its significance score is below threshold.
+A critical decision from 6 months ago stays hot if it's still being accessed. A routine grep from yesterday decays fast if its significance is low.
 
-All thresholds configurable in `config.json`.
+### Recall (No Thawed Tier)
 
-### Warm transition walkthrough
+Splunk has a "thawed" tier to prevent ping-ponging (recall → immediately re-frozen because it's old). Myelin8 doesn't need it because the AI dynamically manages access:
 
-```
-File: session-2025-09-12.jsonl (1.5 MB, significance: 0.3)
-  Age: 8 days (> 1 week), Idle: 5 days (> 3 days)
-  Significance too low to resist → HOT → WARM
+- Recall resets `last_accessed` to NOW
+- Both age AND idle must exceed thresholds to transition
+- Hebbian boost: accessed memories increase significance
+- If it matters, the AI keeps accessing it → stays hot
+- If it was a one-time lookup → naturally decays back
 
-  ├─ Stage 1: JSON minification
-  │   Strip whitespace, normalize formatting
-  │   1.5 MB → 1.0 MB (33% removed)
-  │
-  ├─ Stage 2: zstd level 3 compression
-  │   1.0 MB → 340 KB (4.4x from original)
-  │
-  ├─ Embedding truncated (if enabled):
-  │   384d float32 → 256d float32 (Matryoshka — drop last 128 dims)
-  │
-  └─ Index entry updated: tier=warm, compressed_path=session.jsonl.zst
-```
-
-### Cold transition walkthrough
-
-```
-Warm artifact: session.jsonl.zst (340 KB)
-  Age: 5 weeks, Idle: 3 weeks → WARM → COLD
-
-  ├─ Decompress warm zstd back to raw content
-  │   340 KB → 1.0 MB (minified JSON)
-  │
-  ├─ Stage 1: Boilerplate stripping
-  │   The 3,000-token system prompt repeated in every session
-  │   Replaced with: BOILERPLATE_REF:a3f7b2e1 (64 bytes)
-  │   Original stored once in ~/.myelin8/boilerplate/
-  │   Content reduced by 40-70%
-  │   1.0 MB → 400 KB
-  │
-  ├─ Stage 2: JSON minification (cleanup pass)
-  │
-  ├─ Stage 3: Dictionary-trained zstd level 9
-  │   Dictionary (112 KB) trained on your sessions knows your
-  │   JSON schema, common tokens, tool call formats.
-  │   Only compresses what's unique to this session.
-  │   400 KB → 150 KB (10x from original)
-  │
-  ├─ Embedding truncated (if enabled):
-  │   256d float32 → 128d int8 quantized (4x smaller)
-  │
-  └─ Index entry updated: tier=cold
-```
-
-### Frozen transition walkthrough
-
-```
-Cold artifact: session.jsonl.cold.zst (150 KB)
-  Age: 4 months, Idle: 6 weeks → COLD → FROZEN
-
-  ├─ Decompress cold zstd (using trained dictionary)
-  │
-  ├─ Columnar Parquet conversion
-  │   JSONL rows transposed to columns:
-  │
-  │   role column:      ["user","assistant","user",...]
-  │     → cardinality 2 → run-length encoding → ~0 bytes
-  │
-  │   timestamp column: [1710000000, 1710000060, 1710000120,...]
-  │     → monotonically increasing → delta encoding → ~0 bytes
-  │
-  │   content column:   actual conversation text
-  │     → dictionary encoding (repeated phrases) + zstd-19
-  │
-  │   150 KB → 50 KB (30x from original)
-  │
-  │   Column-selective reads: "give me all decisions" reads
-  │   only the content column with type=decision filter.
-  │   Never touches timestamps, roles, or tool calls.
-  │
-  ├─ Embedding compressed (if enabled):
-  │   128d int8 → 48-byte packed binary (Product Quantization)
-  │
-  └─ Index entry updated: tier=frozen
-```
+The AI IS the babysitter. No special tier needed.
 
 ---
 
-## Compression Pipeline
+## Parquet Storage
 
-Each tier applies progressively more aggressive compression:
+All non-hot data is Parquet. One schema across all tiers:
 
 ```
-HOT    ████████████████████████████████████████  1,500 KB   1x     instant
-WARM   ████████████                              340 KB    4-5x    ~10ms
-COLD   ██████                                    150 KB    8-12x   ~200ms
-FROZEN ██                                        50 KB    20-50x   ~2s
+content_hash:    binary       # SHA-256 of original — NEVER recomputed
+content:         utf8         # the actual text (lossless)
+content_type:    utf8         # "decision", "error", "routine", "correction"
+source_label:    utf8         # "claude-memory", "swarm", user-defined
+significance:    float32      # 0.0–1.0
+created_date:    timestamp    # when memory was created (never changes)
+last_accessed:   timestamp    # drives decay (resets on recall)
+summary:         utf8         # pre-extracted summary
+keywords:        list<utf8>   # extracted keywords
+original_size:   uint64       # for compression ratio tracking
 ```
 
-| Tier | Techniques Applied | Ratio |
-|------|---|---|
-| Hot | None (original plaintext) | 1x |
-| Warm | JSON minification + zstd-3 | 4-5x |
-| Cold | Boilerplate stripping + minification + dictionary-trained zstd-9 | 8-12x |
-| Frozen | Columnar Parquet + dictionary encoding + RLE + delta + zstd-19 | 20-50x |
+### Column-Selective Reads
 
-The dictionary (`~/.myelin8/compression.dict`, 112 KB) is trained on representative sessions and reused across all cold/frozen compressions. It knows your JSON schema, so it only compresses what's unique to each session.
+The token savings mechanism. When Claude searches for a decision, myelin8 returns the `summary` column (200 tokens), not the `content` column (10K tokens).
+
+**Tested:** 27 files, summary-only read = 1,865 bytes vs full content = 63,715 bytes = **34x less data read.**
+
+### Lossless Verification
+
+**Tested:** Full round-trip (hot → warm Parquet zstd-3 → cold Parquet zstd-9 → frozen Parquet zstd-19 → recall to hot). SHA-256 identical at every stage. Parquet is lossless for UTF-8 text content.
+
+### Batching
+
+Individual small files in Parquet have ~15KB metadata overhead (schema, row groups, footer). A 3KB memory file becomes 18KB — 5x larger. Batching solves this:
+
+| Tier | Batch Window | Why |
+|---|---|---|
+| Warm | Weekly | Enough artifacts per batch to amortize overhead |
+| Cold | Monthly | Larger batches, better compression |
+| Frozen | Quarterly | Maximum batch size, maximum compression |
+
+### Compression Ratios
+
+Honest numbers from testing on 27 memory files (avg 2.2KB each — worst case for Parquet):
+
+| Format | Size | Ratio |
+|---|---|---|
+| Original (27 files) | 60,419 bytes | 1x |
+| Parquet zstd-3 (warm) | 37,213 bytes | 1.6x |
+| Parquet zstd-9 (cold) | 35,659 bytes | 1.7x |
+| Parquet zstd-19 (frozen) | 35,063 bytes | 1.7x |
+
+Ratios are modest on small text files. Larger session logs (50-500KB) will compress significantly better as content-to-overhead ratio shifts. The value of Parquet is column-selective reads (34x less for summary queries), not raw compression ratio.
 
 ---
 
 ## Search and Retrieval
 
-Search NEVER decompresses data. The semantic index (built at registration time) contains everything needed to answer queries: keywords, summaries, significance scores, content hashes.
+Search NEVER decompresses data. tantivy indexes everything at ingest. Queries hit the index, not the Parquet files.
 
 ```
 Query: "what did we decide about the database?"
   │
-  ├─ FTS keyword lookup: "decide" + "database"
-  │   → 3 matches (artifacts a3f8, b7d1, c9f2)
+  ├─ tantivy FTS: stemmed search for "decide" + "database"
+  │   → BM25 scored results
+  │   → enriched with significance + source label
+  │   → 3 matches
   │
   ├─ Semantic search (if embeddings enabled):
-  │   → 5 matches by cosine similarity
+  │   → cosine similarity on query embedding
+  │   → 5 matches
   │
-  ├─ RRF fusion: merge both result sets
-  │   → artifacts appearing in BOTH rank highest
-  │   → b7d1 ranks #1 (keyword match + semantic match)
+  ├─ RRF fusion (if both enabled):
+  │   → score = Σ 1/(k + rank_i), k=20
+  │   → artifacts in BOTH results rank highest
   │
-  └─ Return: summary of b7d1 (200 tokens)
-     NOT the full 10,000-token session
+  └─ Return: summaries + metadata (200 tokens total)
+     NOT the full sessions (10,000+ tokens)
 ```
 
-**Token savings:** 200 tokens returned vs 10,000+ tokens from reading the raw session. The AI gets the answer. The context window stays clean.
+tantivy provides: full inverted index over ALL tokens (not top-30), Porter stemming ("postgres" matches "PostgreSQL"), BM25 scoring, date range queries, field filtering (tier, source label, significance range).
 
 ---
 
-## Hybrid Search
+## Integrity
 
-No single search method handles every query type. Different queries fail in different ways:
+Two layers — per-artifact and whole-system:
 
-| Query Type | FTS Catches | FTS Misses |
-|---|---|---|
-| "database migration" | Exact term match | Paraphrased as "schema changes" |
-| "that refactor from last week" | "refactor" matches | "that" and "last week" are noise |
+### Per-Artifact: Content Hash
 
-| Query Type | Semantic Catches | Semantic Misses |
-|---|---|---|
-| "schema changes" | Conceptually similar to "database migration" | Might also return "API schema" (wrong context) |
-| "meeting with Adam" | Related to "Adam" discussions | Can't distinguish which Adam |
+SHA-256 computed once on original plaintext at ingest. Never recomputed. Travels with the artifact through every tier as a column in Parquet.
 
-**Reciprocal Rank Fusion (RRF)** combines results from FTS and semantic search. An artifact that ranks well in BOTH methods gets boosted. An artifact that only ranks in one method ranks lower. This covers more query variations than either method alone.
+On every recall:
+1. Read content from Parquet
+2. Compute SHA-256 of recovered content
+3. Compare to stored `content_hash`
+4. Match = lossless. Mismatch = drift detected, warn user.
 
-```python
-# RRF formula (Cormack et al., 2009)
-# k=60 dampens the impact of high-ranking outliers
-score(artifact) = Σ 1 / (k + rank_in_method_i)
-```
+### Whole-System: Merkle Tree
 
-Search cascade order:
-1. **FTS keyword lookup** — fast, exact, always available
-2. **HNSW vector search** — semantic, approximate (if embeddings enabled)
-3. **RRF fusion** — combines 1 + 2
-4. **Brute-force cosine** — fallback if HNSW unavailable
-5. **Spreading activation** — CoGraph traversal for related artifacts (if enabled)
-
----
-
-## Merkle Tree
-
-Dual-purpose: integrity verification AND search acceleration.
-
-### Integrity (Anti-Hallucination)
-
-Every artifact gets a leaf in a SHA3-256 binary hash tree. The root hash covers all artifacts across all four tiers.
+SHA3-256 binary hash tree over all content hashes across all tiers.
 
 ```
-                  Root: 061e... (SHA3-256)
-                    /              \
-             Hash AB                Hash CD
-            /      \               /      \
-      Hash A      Hash B     Hash C      Hash D
-        |           |          |           |
-   Session 1   Session 2   Session 3   Session 4
-    (hot)       (warm)      (cold)     (frozen)
+        Merkle Root
+        /          \
+    Hash(AB)     Hash(CD)
+    /    \        /    \
+  hash_A hash_B hash_C hash_D    ← these ARE the content_hashes
+    |      |      |      |
+  art_1  art_2  art_3  art_4     ← artifacts across all tiers
 ```
 
-When the AI claims "we decided X in Session 3," produce a Merkle proof — a path of hashes from Session 3's leaf to the root. If the proof verifies, the conversation is real. If it doesn't, the AI fabricated it.
+- **Anti-hallucination:** AI claims "we discussed X in session 47" → Merkle proof verifies session 47 exists AND content hasn't drifted
+- **Tamper detection:** One root hash check covers all artifacts. O(log n).
+- **Selective disclosure:** Prove one memory exists without revealing any others
 
-### Search Acceleration
-
-The Merkle tree also accelerates search by enabling:
-
-1. **Existence checks without decompression.** Before searching a cold/frozen tier, check if the content hash exists in the tree. If not, skip that tier entirely. O(log n).
-
-2. **Change detection for incremental indexing.** When the root hash changes, walk the tree to find which subtree changed. Only re-index the changed branch.
-
-3. **Partition-aware routing.** Branches organized by time/project namespace. A query scoped to "project X, last 30 days" traverses only the relevant subtree.
-
-The tree runs in compiled Rust (`myelin8-vault` sidecar) for performance. The sidecar also maintains an inverted keyword index mapping keyword hashes to content hashes — enabling term lookups without exposing plaintext keywords.
+Stored as `merkle.bin`. Computed in Rust.
 
 ---
 
@@ -364,71 +364,56 @@ The tree runs in compiled Rust (`myelin8-vault` sidecar) for performance. The si
 When the summary isn't enough and full content is needed:
 
 ```bash
-myelin8 recall ~/.claude/projects/.../session-2025-09-12.jsonl
+myelin8 recall <content_hash_or_path>
 ```
 
-1. Locate compressed artifact by content hash
-2. Decompress (reverse the compression pipeline for that tier)
-3. Decrypt if encrypted (Rust sidecar)
-4. Verify integrity (content hash matches registered hash)
-5. Promote back to hot tier
-6. Return plaintext content
+1. Look up artifact location via tantivy (which Parquet file, which row)
+2. Read content column from Parquet (column-selective, skip everything else)
+3. SHA-256 verify: `hash(content) == stored content_hash`
+4. Write to `store/hot/` as plaintext
+5. Reset `last_accessed` to NOW (prevents immediate re-compression)
+6. Boost significance by 0.1 (Hebbian reinforcement)
+7. Claude can now `Read` the file directly
 
-Cold recall: ~200ms. Frozen recall: ~2s. The latency is acceptable because recall is rare — search handles 90%+ of queries via summaries.
+Recall latency: warm ~10ms, cold ~200ms, frozen ~2s. Acceptable because recall is rare — search handles 90%+ of queries via summaries.
 
 ---
 
-## Embedding Architecture
+## Embedding Architecture (Optional)
 
-Optional (`pip install myelin8[embeddings]`). Not required for FTS-only operation.
+Available via optional feature flag. Not required for FTS-only operation.
 
 ### Matryoshka Embeddings
 
-One embedding model (all-MiniLM-L6-v2, 384 dimensions), four resolutions per tier:
+One model (all-MiniLM-L6-v2, 384 dimensions), four resolutions per tier:
 
-| Tier | Dimensions | Format | Size per Vector | Purpose |
-|------|-----------|--------|----------------|---------|
-| Hot | 384 | float32 | 1,536 bytes | Full precision search |
-| Warm | 256 | float32 | 1,024 bytes | Good precision, 33% smaller |
-| Cold | 128 | int8 | 128 bytes | Quantized, 92% smaller |
-| Frozen | 64 | binary packed | 48 bytes | Coarse matching, 97% smaller |
+| Tier | Dimensions | Format | Size per Vector |
+|------|-----------|--------|----------------|
+| Hot | 384 | float32 | 1,536 bytes |
+| Warm | 256 | float32 | 1,024 bytes |
+| Cold | 128 | int8 | 128 bytes |
+| Frozen | 64 | binary packed | 48 bytes |
 
-Matryoshka ("Russian doll") embeddings are truncated, not retrained. The first N dimensions of a 384-dim embedding ARE a valid N-dim embedding. This is a property of how the model was trained — each prefix is a self-contained representation at lower resolution.
+Truncated, not retrained — each prefix is a valid lower-res embedding.
 
 ### HNSW Vector Index
 
-Hierarchical Navigable Small World graphs for approximate nearest neighbor search. Per-tier graphs with tuned parameters:
-
-- `M=16` — max connections per node
-- `ef_construction=200` — build-time accuracy
-- `ef_search=50` — query-time accuracy
-
-O(log n) search vs O(n) brute force. Deferred for MVP — brute-force cosine is fast enough under 50K artifacts.
+Per-tier approximate nearest neighbor graphs. O(log n) search. Deferred until brute-force cosine exceeds 200ms (est. >50K artifacts).
 
 ---
 
-## CoGraph (Associative Recall)
+## Encryption (Opt-In, Deferred)
 
-Co-occurrence tracking + spreading activation. When artifacts appear together in sessions, they get edges in a graph. When you search for one artifact, related artifacts surface automatically.
-
-**Implementation:** Rust sidecar (`cograph.rs`). PPMI-weighted edges, BFS spreading activation (depth cap: 3, top_k limited for DoS prevention). In-memory only — never persisted to disk.
-
-**Status:** Implemented, being evaluated. Deferred from MVP until usage data shows whether associative recall has measurable value.
-
----
-
-## Encryption (Opt-In)
-
-Available via `pip install myelin8[secure]`. Not required. Not in the default install.
+All encryption code exists. Not enabled by default. Deferred until compression + search pipeline is proven stable.
 
 When enabled:
-- **ML-KEM-768 + X25519** hybrid key encapsulation (NIST FIPS 203, post-quantum safe)
-- **AES-256-GCM** authenticated encryption per artifact
-- **Per-tier keypairs** — compromise warm, cold stays safe
-- **Rust sidecar** handles all crypto — private keys never enter Python
-- **macOS Keychain** integration for key storage (Touch ID)
+- ML-KEM-768 + X25519 hybrid key encapsulation (NIST FIPS 203)
+- AES-256-GCM per-artifact encryption
+- Per-tier keypairs
+- Rust sidecar handles all crypto — keys never enter application memory
+- macOS Keychain integration
 
-See `docs/KEY-STORAGE-GUIDE.md` for setup.
+Encryption will layer on top of Parquet: encrypt whole Parquet files at rest. Decrypt on search/recall via sidecar. Design TBD after Phase 1 (compression + search) is validated.
 
 ---
 
@@ -436,14 +421,31 @@ See `docs/KEY-STORAGE-GUIDE.md` for setup.
 
 ```
 ~/.myelin8/
-├── config.json           # User-defined sources (via `myelin8 add`), tier thresholds, feature flags
-├── artifact-registry.json # Per-artifact metadata (hash, tier, timestamps, significance)
-├── semantic-index.json    # Keywords, summaries per artifact (search index)
-├── compression.dict       # Trained zstd dictionary (112 KB)
-├── embeddings/            # Per-tier .npy files (if embeddings enabled)
-├── hnsw-*.bin             # Per-tier HNSW graphs (if enabled)
-└── (frozen .parquet files stored alongside compressed artifacts)
+├── config.toml              # user-defined sources (via myelin8 add)
+├── merkle.bin               # SHA3-256 binary Merkle tree
+│
+├── index/                   # tantivy search index (local files, no server)
+│   └── (tantivy segment files)
+│
+├── store/
+│   └── hot/                 # plaintext artifacts (Claude reads directly)
+│       ├── a3f8c2e1.md
+│       ├── a3f8c2e1.meta    # msgpack: hash, tier, timestamps, significance
+│       └── b7d1e4f9.jsonl
+│
+├── warm/                    # weekly Parquet batches (zstd-3)
+│   ├── 2026-W11.parquet
+│   └── 2026-W12.parquet
+│
+├── cold/                    # monthly Parquet batches (zstd-9)
+│   ├── 2026-02.parquet
+│   └── 2026-03.parquet
+│
+└── frozen/                  # quarterly Parquet batches (zstd-19)
+    └── 2026-Q1.parquet
 ```
+
+No database. No MongoDB. No SQLite. Just Rust libraries and the filesystem. Git proved this scales to millions of objects. Splunk proved this scales to petabytes.
 
 ---
 
@@ -451,12 +453,12 @@ See `docs/KEY-STORAGE-GUIDE.md` for setup.
 
 Myelin8 indexes AI assistant directories but NEVER modifies them:
 
-```python
-PROTECTED_PATHS = [
-    Path.home() / ".claude",
-    Path.home() / ".cursor",
-    Path.home() / ".config" / "github-copilot",
-]
+```rust
+const PROTECTED_PATHS: &[&str] = &[
+    "~/.claude",
+    "~/.cursor",
+    "~/.config/github-copilot",
+];
 ```
 
-These directories are managed by their respective AI assistants. Myelin8 can read and index them for search. It cannot compress, encrypt, or delete files inside them. This is enforced in `engine.py` via `_is_protected()` — the guard runs before every tier transition.
+Enforced in `engine.rs` before every tier transition. Read-only indexing only.
