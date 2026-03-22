@@ -3,8 +3,9 @@
 import os
 import tempfile
 
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy")
 
 from src.lookup_tables import (
     LSHIndex,
