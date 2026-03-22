@@ -294,15 +294,16 @@ NIST [IR 8547](https://nvlpubs.nist.gov/nistpubs/ir/2024/NIST.IR.8547.ipd.pdf) (
 
 ## Supported AI Assistants
 
-| Assistant | Auto-detected |
-|-----------|--------------|
-| Claude Code | 18 locations: sessions, subagents, memory, debug, plans, tasks |
-| ChatGPT | Desktop app cache |
-| Cursor | Conversation logs |
-| GitHub Copilot | Configuration cache |
-| OpenAI Codex | Custom config |
-| OpenClaw | Custom config |
-| Any AI tool | Add any directory to `config.json` |
+**Tested and verified with Claude Code.** Other assistants are auto-detected and scanned but have not been validated end-to-end. Use at your own discretion — Engram is being actively improved as testing expands and efficiency is refined over time. Community testing and feedback welcome.
+
+| Assistant | Auto-detected | Tested |
+|-----------|--------------|--------|
+| Claude Code | 18 locations: sessions, subagents, memory, debug, plans, tasks | **Yes** |
+| OpenClaw | MEMORY.md, daily notes, sessions, context | Scan only |
+| ChatGPT | Desktop app cache | Scan only |
+| Cursor | Conversation logs | Scan only |
+| GitHub Copilot | Configuration cache | Scan only |
+| Any AI tool | Add any directory to `config.json` | — |
 
 ---
 
