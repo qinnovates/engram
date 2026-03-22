@@ -396,8 +396,8 @@ class EnvelopeEncryptor:
         # Generate unique random DEK for this artifact
         dek = generate_dek()
 
-        # Encrypt DEK with tier's public key (asymmetric, PQ hybrid via sidecar)
-        encrypted_dek = encrypt_dek_with_pubkey(dek, tier_keys.pubkey)
+        # Encrypt DEK with tier's key via sidecar (pass tier name, not pubkey value)
+        encrypted_dek = encrypt_dek_with_pubkey(dek, tier)
 
         # Compute plaintext hash for post-decrypt integrity check
         plaintext_hash = ""
