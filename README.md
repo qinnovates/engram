@@ -1,26 +1,43 @@
 # Engram
 
-**Architecting Brain's Memory To Solve AI Context Persistence**
+**Brain-modeled tiered memory for AI — with post-quantum encryption and Merkle integrity.**
 
-*A security engineer's approach to tackling AI context persistence and hardware constraints by modeling how the human brain stores and retrieves memory.*
+### The Problem
 
-AI context windows have a hard limit. Fill it up and the oldest memories fall off. Your assistant forgets what you told it last week.
+AI assistants forget. Context windows have hard limits. Fill it up and the oldest context falls off. Your assistant loses decisions from last week, code reviews from last month, and architecture conversations from last quarter. You re-explain the same context every session.
 
-Engram solves this the way the brain does.
+The standard solution is "just expand the context window." But larger windows don't solve finding the right context (10M tokens of everything is worse than 32K of the right thing), don't solve cost (loading gigabytes per API call is expensive), and don't solve security (more data per prompt = more data at risk).
 
-Your brain doesn't hold everything in working memory at once. It uses a tiered architecture: the **prefrontal cortex** keeps ~7 items in active firing for immediate access (hot). The **hippocampus** consolidates recent experiences over hours and days, replaying them during sleep into longer-term storage (warm). The **neocortex** stores long-term memories distributed across cortical regions, reconstructed from fragments when the right cue triggers recall (cold). And the deepest memories — the ones you haven't accessed in months or years — take real effort and the right context to surface, like the tip-of-tongue phenomenon (frozen).
+### The Approach
 
-Each tier trades retrieval speed for storage efficiency. That's not a limitation. It's what lets the system scale across decades.
+This started as a hardware constraint problem. Limited disk, limited context window, months of AI session data piling up. The question was: how do you keep months of AI memory accessible without unlimited storage?
 
-This isn't a new idea in AI. DeepSeek-V2 ([arXiv:2405.04434](https://arxiv.org/abs/2405.04434)) applied the same principle to attention itself: instead of recalculating full key/value tensors for every token, they precompute and cache compressed latent vectors — reducing KV cache by 93.3% and achieving 5.76x throughput. Same insight: don't recompute what you can store compressed and recall on demand.
+The answer came from neuroscience.
 
-Engram applies this to your AI's *memory*. It solves three problems at once:
+Your brain doesn't hold everything in working memory. It uses a tiered architecture: the **prefrontal cortex** holds ~7 items for immediate access. The **hippocampus** consolidates recent experiences into longer-term storage. The **neocortex** stores long-term memories distributed across regions, reconstructed from fragments when the right cue triggers recall. And the deepest memories take real effort to surface — the tip-of-tongue phenomenon.
 
-**Context persistence.** Your AI's memory doesn't disappear when the context window fills up. Old sessions compress into searchable tiers instead of being dropped. Months of decisions, code reviews, and conversations stay accessible through the semantic index — no re-explaining required.
+Each tier trades retrieval speed for storage efficiency. That's not a limitation. It's what lets the system scale across decades. Engram applies this same architecture to AI memory.
 
-**Hardware constraints.** Expanding AI memory means expanding disk usage. Without compression, six months of daily sessions consumes gigabytes. Engram's multi-stage pipeline (4-5x warm, 8-12x cold, 20-50x frozen) shrinks that footprint by 90%+ while keeping everything searchable. You don't need more hardware. You need smarter storage.
+```
+HOT (now)    ████████████████████████████████████████  1,500 KB   1x    instant
+WARM (1w)    ████████████                              340 KB   4-5x    ~10ms
+COLD (1mo)   ██████                                    150 KB   8-12x   ~200ms
+FROZEN (3mo) ██                                        50 KB   20-50x   ~2s
+```
 
-**Security risks of expanded memory.** More memory means more data at risk. Every session you've ever had — stored in plaintext on disk. Engram adds optional post-quantum encryption (ML-KEM-768 hybrid) so your expanded memory is protected at rest. Per-artifact keys. Per-tier keypairs. Private keys handled by a compiled Rust sidecar that never lets them enter Python.
+### Three Problems Solved
+
+**Context persistence.** Old sessions compress into searchable tiers instead of being dropped. Months of decisions, code reviews, and conversations stay accessible through the semantic index. No re-explaining.
+
+**Hardware constraints.** Six months of daily sessions would consume gigabytes uncompressed. Engram's multi-stage pipeline (4-5x warm, 8-12x cold, 20-50x frozen) shrinks that footprint by 90%+ while keeping everything searchable. Smarter storage, not more storage.
+
+**Security of AI memory.** This is the problem nobody is solving yet. Every session you've ever had with an AI — stored in plaintext on disk. As personal AI assistants become persistent (remembering your preferences, your codebase, your decisions), that memory becomes a high-value target. An adversary who accesses your AI memory gets your entire professional history.
+
+Engram adds post-quantum encryption (ML-KEM-768 + X25519 hybrid, NIST FIPS 203) so your AI memory is protected against both current and future threats. The "harvest now, decrypt later" (HNDL) risk — where an adversary records encrypted data today and breaks it with a quantum computer in 10-20 years — is real for long-lived data. AI memory that persists for years needs encryption that persists for decades. Per-artifact keys. Per-tier keypairs. Private keys handled by a compiled Rust sidecar that never lets them enter Python's address space.
+
+Every recalled artifact is verified via a SHA3-256 Merkle tree with HMAC root sealing — proving the memory hasn't been tampered with and that the AI isn't hallucinating past conversations. Integrity and confidentiality, not just one or the other.
+
+AI is here to stay. Secure memory for AI is the next big infrastructure problem. Engram is a first step.
 
 No additional setup needed to expand memory. Run `engram init` (auto-detects your AI assistants), then `engram run` (compresses and indexes everything). Your AI immediately has access to months of context through the semantic index. The context window didn't get bigger. The memory behind it got smarter.
 
@@ -143,6 +160,8 @@ This means a compromised or misbehaving AI session can't silently access months 
 Add post-quantum encryption and the tiers become actual access barriers: even with disk access, frozen artifacts are ML-KEM-768 encrypted with per-artifact keys managed by a Rust sidecar that never lets private keys enter Python's address space.
 
 ---
+
+**[FAQ](docs/FAQ.md)** — Merkle trees, Matryoshka embeddings, the Rust sidecar, PQC encryption, component architecture, performance benchmarks, and security review findings.
 
 ## Table of Contents
 
