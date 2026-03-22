@@ -33,7 +33,9 @@ FROZEN (3mo) ██                                        50 KB   20-50x   ~5s
 
 ### Merkle Tree Integrity — Anti-Hallucination for AI Memory
 
-*Added 2026-03-21. Upgraded from SHA-256 to SHA3-256 with HMAC-SHA3 root sealing on the same date.*
+*Added 2026-03-21. SHA-256 replaced entirely with SHA3-256. HMAC-SHA3 root sealing added. Python implementation archived — all Merkle operations moved to Rust sidecar.*
+
+*Two separate protections: SHA3-256 Merkle tree proves data hasn't been tampered with (integrity). HMAC seal proves who computed it (authentication). Integrity without authentication means an attacker can build a valid tree with fake data. Authentication without integrity means the key holder could tamper with artifacts. You need both. Neither replaces Engram's existing encryption (ML-KEM-768 + AES-256-GCM) — encryption hides content, Merkle proves content is real. Separate threats, separate systems.*
 
 AI systems hallucinate. They fabricate citations, invent past conversations, and confidently reference decisions that never happened. When your AI says "we decided X last week," how do you know that conversation actually existed?
 
