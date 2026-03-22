@@ -63,16 +63,13 @@ engram recall ~/.claude/projects/.../session-2025-06-15.jsonl
 
 ### 6. Enable post-quantum encryption
 ```bash
-# Install age (PQ encryption tool)
-brew install age
-
 # Build the crypto sidecar (handles keys — Python never sees them)
 cd engram/sidecar && cargo build --release
 
 # Generate per-tier keypairs stored in Keychain (Touch ID)
 engram encrypt-setup
 ```
-**What it does:** Sets up ML-KEM-768 hybrid encryption via a Rust sidecar. Private keys go directly to macOS Keychain — they never exist as files, never enter Python, never appear in terminal output. Every tier gets its own keypair. Every artifact gets its own unique encryption key.
+**What it does:** Sets up ML-KEM-768 hybrid encryption via a Rust sidecar. No external tools needed — everything is built in. Private keys go directly to macOS Keychain — they never exist as files, never enter Python, never appear in terminal output. Every tier gets its own keypair. Every artifact gets its own unique encryption key.
 
 ### 7. Set up 2-tier mode (simple)
 ```bash
