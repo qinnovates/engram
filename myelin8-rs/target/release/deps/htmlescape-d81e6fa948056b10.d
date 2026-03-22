@@ -1,0 +1,11 @@
+/Users/mac/Documents/PROJECTS/engram/myelin8-rs/target/release/deps/htmlescape-d81e6fa948056b10.d: /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/lib.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/encode.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/decode.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/entities.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/io_support.rs
+
+/Users/mac/Documents/PROJECTS/engram/myelin8-rs/target/release/deps/libhtmlescape-d81e6fa948056b10.rlib: /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/lib.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/encode.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/decode.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/entities.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/io_support.rs
+
+/Users/mac/Documents/PROJECTS/engram/myelin8-rs/target/release/deps/libhtmlescape-d81e6fa948056b10.rmeta: /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/lib.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/encode.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/decode.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/entities.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/io_support.rs
+
+/Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/lib.rs:
+/Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/encode.rs:
+/Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/decode.rs:
+/Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/entities.rs:
+/Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/htmlescape-0.3.1/src/io_support.rs:

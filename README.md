@@ -16,11 +16,9 @@ AI assistants forget everything between sessions. Every conversation starts from
 
 The entire AI memory space approaches this as a linear problem: chunk text, embed it, store vectors, search by cosine similarity. It's RAG. It works for simple lookups. It breaks for everything else.
 
-Meanwhile, the systems that actually handle massive data at scale — Splunk, Snowflake, Elasticsearch — solved this decades ago. They didn't solve it with vector search. They solved it with **tiered storage, inverted indexes, bloom filters, columnar formats, and compression pipelines** that let you search petabytes without reading petabytes.
+Systems like Splunk, Snowflake, and Elasticsearch showed how to get data and point to it at scale — tiered storage, inverted indexes, bloom filters, columnar formats. But they didn't solve AI memory. They just showed how to manage data. What I'm solving here is how to take that same SIEM logic I've built throughout my career and apply it to AI — indexing memory faster, using less tokens, and less storage.
 
-Nobody in the AI memory space is looking at how these systems work.
-
-This project brings SIEM architecture to AI memory.
+There will be people with decades of memory they want to use securely. Imagine being old and your memory is getting bad. This is where AI memory will become helpful for dementia in the future. The memory you have in AI — your chatbot conversations, your decisions, your life — will be useful in BCIs one day. Alzheimer's runs in my family. This is my goal.
 
 > "Why recompute what the full digits of pi is if you have the answer written on a chalkboard? Rather than recomputing pi from the actual formula, we just know 3.14, it's close enough, it's an estimate."
 

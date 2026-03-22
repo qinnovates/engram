@@ -1,0 +1,12 @@
+/Users/mac/Documents/PROJECTS/engram/myelin8-rs/target/release/deps/fs4-c31c7f7088f0a797.d: /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/lib.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/unix.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/unix/sync_impl.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/file_ext.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/fs_stats.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/file_ext/sync_impl.rs
+
+/Users/mac/Documents/PROJECTS/engram/myelin8-rs/target/release/deps/libfs4-c31c7f7088f0a797.rlib: /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/lib.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/unix.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/unix/sync_impl.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/file_ext.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/fs_stats.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/file_ext/sync_impl.rs
+
+/Users/mac/Documents/PROJECTS/engram/myelin8-rs/target/release/deps/libfs4-c31c7f7088f0a797.rmeta: /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/lib.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/unix.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/unix/sync_impl.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/file_ext.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/fs_stats.rs /Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/file_ext/sync_impl.rs
+
+/Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/lib.rs:
+/Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/unix.rs:
+/Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/unix/sync_impl.rs:
+/Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/file_ext.rs:
+/Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/fs_stats.rs:
+/Users/mac/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fs4-0.8.4/src/file_ext/sync_impl.rs:
