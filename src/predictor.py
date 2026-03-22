@@ -31,7 +31,12 @@ from __future__ import annotations
 import json
 import time
 import hashlib
-import numpy as np
+try:
+    import numpy as np
+    _HAS_NUMPY = True
+except ImportError:
+    np = None
+    _HAS_NUMPY = False
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field, asdict

@@ -27,7 +27,12 @@ import os
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
+try:
+    import numpy as np
+    _HAS_NUMPY = True
+except ImportError:
+    np = None
+    _HAS_NUMPY = False
 
 
 # ---------------------------------------------------------------------------
