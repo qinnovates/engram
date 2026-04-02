@@ -1,0 +1,146 @@
+# Episodic Memory Schema
+# Validates individual entries in episodic_memory.jsonl stores.
+# Episodes are records of what happened — not what is true. Time-ordered, importance-weighted,
+# subject to compaction and decay.
+
+$schema: "http://json-schema.org/draft-07/schema#"
+title: "EpisodicMemoryEvent"
+description: >
+  A single episodic memory record. Captures what happened in a session — decisions made,
+  tasks completed, notable exchanges. Episodes are retrieved by recency and importance,
+  not by key lookup. They degrade over time and are compacted into digests.
+
+type: object
+required:
+  - id
+  - summary
+  - entities
+  - timestamp
+  - importance
+  - source_conversation_id
+
+additionalProperties: false
+
+properties:
+  id:
+    type: string
+    pattern: "^ep_[a-z0-9_]+$"
+    description: "Unique identifier. Format: ep_<uuid> or ep_<descriptive_slug>."
+    examples:
+      - "ep_auth_bug_fix_2026_03_25"
+      - "ep_a1b2c3d4e5f6"
+
+  summary:
+    type: string
+    minLength: 20
+    maxLength: 1000
+    description: >
+      Human-readable summary of what happened. This is what gets injected at retrieval time.
+      Write for a future reader who has no other context.
+      - Lead with what happened (the action or outcome)
+      - Include any decisions made and why
+      - Note any follow-up items or open questions
+      NEVER include PII, secrets, or credentials in the summary.
+    examples:
+      - "Debugged JWT validation bug where aud claim was not being checked. Fixed in src/middleware/auth.ts. User noted this was the second time this pattern caused a production incident."
+      - "Designed initial QIF NISS scoring schema. User confirmed confidence float and sensitivity enum are correct. Agreed DSM-5-TR mapping should be advisory only."
+
+  entities:
+    type: array
+    items:
+      type: string
+    minItems: 1
+    maxItems: 20
+    uniqueItems: true
+    description: >
+      Entity tags for retrieval filtering and importance scoring.
+      Include: project names, technology names, people, concepts, problem domains.
+      Used for similarity search when retrieving relevant episodes.
+    examples:
+      - ["JWT", "auth middleware", "production incident", "security"]
+      - ["QIF", "NISS", "schema design", "neuroethics", "neurosecurity"]
+
+  timestamp:
+    type: string
+    format: date-time
+    description: "ISO 8601 UTC timestamp of when the episode occurred (end of session or key moment)."
+
+  importance:
+    type: number
+    minimum: 0.0
+    maximum: 1.0
+    description: >
+      Importance score for retrieval ranking. Combines urgency, novelty, and user emphasis.
+      - 0.9-1.0: critical incident, major decision, significant milestone
+      - 0.7-0.89: completed task with notable outcome, confirmed decision
+      - 0.5-0.69: routine task completion, minor decision
+      - 0.3-0.49: informational update, context build
+      - < 0.3: routine, low signal — candidate for early compaction
+      Importance decays over time (see decay_rate). High importance at creation
+      does not guarantee indefinite retention.
+
+  source_conversation_id:
+    type: string
+    description: >
+      Identifier of the conversation/session where this episode originated.
+      Enables tracing back to the original context if needed.
+
+  compacted:
+    type: boolean
+    default: false
+    description: >
+      Whether this episode has been compacted into a higher-level digest.
+      Compacted episodes may be pruned from the active store; their content lives in the digest.
+
+  decay_rate:
+    type: number
+    minimum: 0.0
+    maximum: 1.0
+    default: 0.05
+    description: >
+      Weekly importance decay rate. Applied by the compaction job.
+      Default 0.05 means importance decays 5% per week.
+      High-importance episodes (0.9+) effectively last 6+ months before dropping below retrieval threshold.
+      Set to 0.0 for episodes the user explicitly wants to retain indefinitely.
+
+  pinned:
+    type: boolean
+    default: false
+    description: >
+      Pinned episodes are exempt from compaction and decay.
+      Use sparingly — pinning everything defeats the purpose of importance-weighted retrieval.
+      Typical candidates: architectural decisions, security incidents, major milestone completions.
+
+  project:
+    type: ["string", "null"]
+    description: >
+      Optional project scope. If set, episode is only retrieved in the context of that project.
+      Prevents cross-project memory bleed.
+    examples:
+      - "sixdots"
+      - "qif-framework"
+      - "clawfish-dev"
+
+  follow_up:
+    type: ["string", "null"]
+    description: >
+      Optional open question or follow-up action from this episode.
+      Surfaced during context assembly if the current task is related.
+    examples:
+      - "Verify that auth middleware aud check also applies to the refresh token endpoint"
+      - "Ask user whether the NISS confidence threshold should be configurable"
+
+# --- Compaction Policy ---
+# Episodes are compacted into weekly digests after:
+#   - importance drops below 0.2 (after natural decay), OR
+#   - the episode is older than 90 days AND importance < 0.5, OR
+#   - explicit user request
+#
+# A weekly digest looks like:
+# {"id":"digest_2026_W12","period":"2026-03-16/2026-03-22","summary":"Completed auth module refactor. Designed QIF NISS v2 schema. Debugged two JWT issues.","episode_ids":["ep_abc","ep_def","ep_ghi"],"importance":0.75,"timestamp":"2026-03-22T23:59:59Z"}
+
+# --- Example Valid Entries (JSONL format) ---
+#
+# {"id":"ep_jwt_bug_2026_03_25","summary":"Debugged JWT validation bug where aud claim was not checked. Fixed in src/middleware/auth.ts line 47. User noted this was the second production incident from the same root cause. Agreed to add a semgrep rule to catch missing aud checks.","entities":["JWT","auth","security","production incident","semgrep"],"timestamp":"2026-03-25T16:30:00Z","importance":0.88,"source_conversation_id":"conv_xyz789","compacted":false,"decay_rate":0.03,"pinned":false,"project":"clawfish-dev","follow_up":"Add semgrep rule for JWT aud validation to post-tool-use hook"}
+#
+# {"id":"ep_niss_schema_design","summary":"Designed initial QIF NISS scoring schema. Confirmed fields: id, signal_type, amplitude_delta_db, frequency_band, confidence, severity_tier (1-5), tara_technique_id, dsp_reference. User confirmed DSM-5-TR mapping is reference-only with required qualifier.","entities":["QIF","NISS","schema","neurosecurity","DSM-5-TR"],"timestamp":"2026-03-28T11:00:00Z","importance":0.92,"source_conversation_id":"conv_abc456","compacted":false,"decay_rate":0.02,"pinned":true,"project":"neurosecurity","follow_up":null}

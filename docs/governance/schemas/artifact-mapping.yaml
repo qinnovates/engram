@@ -1,0 +1,101 @@
+# Artifact Mapping: SIEMPLE-AI Schema ↔ Myelin8 Parquet Columns
+#
+# This file documents how SIEMPLE-AI's fact/episode schemas map to
+# Myelin8's Parquet columnar storage. Used for validation and migration.
+#
+# Myelin8 Parquet is the source of truth for durable storage.
+# SIEMPLE-AI schemas are the source of truth for governance validation.
+
+version: "1.0"
+last_updated: "2026-04-02"
+
+# ────────────────────────────────────────────────────────────────
+# Fact Schema → Parquet Column Mapping
+# ────────────────────────────────────────────────────────────────
+fact_mapping:
+  # SIEMPLE-AI field → Myelin8 Parquet column
+  id:                   { parquet_column: "artifact_id",       type: "Utf8",    nullable: false }
+  namespace:            { parquet_column: "namespace",          type: "Utf8",    nullable: false, default: "user" }
+  type:                 { parquet_column: "memory_type",        type: "Utf8",    nullable: false, default: "note" }
+  key:                  { parquet_column: "source_label",       type: "Utf8",    nullable: true,  note: "Reuses existing source_label column for fact key" }
+  value:                { parquet_column: "content",            type: "Utf8",    nullable: false, note: "Fact value stored as content text" }
+  confidence:           { parquet_column: "confidence",         type: "Float32", nullable: false, default: 0.5 }
+  source:               { parquet_column: "source_provenance",  type: "Utf8",    nullable: false, default: "explicit" }
+  created_at:           { parquet_column: "created_date",       type: "Timestamp", nullable: false }
+  updated_at:           { parquet_column: "last_accessed",      type: "Timestamp", nullable: false, note: "Reuses last_accessed as update tracker" }
+  sensitivity:          { parquet_column: "sensitivity",        type: "Utf8",    nullable: false, default: "low" }
+  tags:                 { parquet_column: "tags",               type: "Utf8",    nullable: true,  note: "JSON-encoded string array" }
+  expires_at:           { parquet_column: "expires_at",         type: "Utf8",    nullable: true,  note: "ISO 8601 string, null = permanent" }
+  source_session_id:    { parquet_column: "session_id",         type: "Utf8",    nullable: true }
+
+  # Myelin8-native columns (no SIEMPLE-AI equivalent):
+  content_hash:         { parquet_column: "content_hash",       type: "Binary",  nullable: false, note: "SHA-256 for Merkle integrity" }
+  summary:              { parquet_column: "summary",            type: "Utf8",    nullable: true,  note: "200-token summary for column-selective reads" }
+  keywords:             { parquet_column: "keywords",           type: "Utf8",    nullable: true,  note: "Extracted search terms for tantivy" }
+  original_size:        { parquet_column: "original_size",      type: "UInt64",  nullable: true }
+  significance:         { parquet_column: "significance",       type: "Float32", nullable: true,  note: "Maps to SIEMPLE-AI confidence for backward compat" }
+
+# ────────────────────────────────────────────────────────────────
+# New Parquet Columns (added in v2.0.0)
+# ────────────────────────────────────────────────────────────────
+new_columns:
+  - name: namespace
+    type: Utf8
+    default: "user"
+    indexed_in_tantivy: true
+    index_type: keyword
+
+  - name: memory_type
+    type: Utf8
+    default: "note"
+    indexed_in_tantivy: true
+    index_type: keyword
+
+  - name: confidence
+    type: Float32
+    default: 0.5
+    indexed_in_tantivy: false
+    note: "Stored but not indexed — returned in results for ranking"
+
+  - name: source_provenance
+    type: Utf8
+    default: "explicit"
+    indexed_in_tantivy: true
+    index_type: keyword
+
+  - name: sensitivity
+    type: Utf8
+    default: "low"
+    indexed_in_tantivy: true
+    index_type: keyword
+
+  - name: tags
+    type: Utf8
+    default: null
+    indexed_in_tantivy: true
+    index_type: full_text
+    note: "JSON-encoded array, searched as text in tantivy"
+
+  - name: expires_at
+    type: Utf8
+    default: null
+    indexed_in_tantivy: true
+    index_type: keyword
+    note: "ISO 8601 string for date range filtering"
+
+  - name: session_id
+    type: Utf8
+    default: null
+    indexed_in_tantivy: false
+    note: "Provenance tracking only, not searchable"
+
+# ────────────────────────────────────────────────────────────────
+# Backward Compatibility
+# ────────────────────────────────────────────────────────────────
+migration:
+  strategy: "additive"
+  note: >
+    All new columns have defaults. Parquet files written by v1.2.0
+    are readable by v2.0.0 — missing columns filled with defaults on read.
+    No data migration required for hot/ plaintext files (JSON schema extended).
+    Tantivy index requires reindex (myelin8 migrate --reindex).

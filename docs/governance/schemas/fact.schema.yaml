@@ -1,0 +1,165 @@
+# Semantic Memory Fact Schema
+# Validates individual entries in semantic_memory.jsonl stores.
+# Every durable, long-lived belief about the user, their preferences, or stable domain facts
+# must conform to this schema before being written.
+
+$schema: "http://json-schema.org/draft-07/schema#"
+title: "SemanticMemoryFact"
+description: >
+  A single durable fact in semantic memory. Facts are long-lived, explicitly provenanced,
+  and retrieved by relevance at inference time. They are NOT injected in bulk.
+
+type: object
+required:
+  - id
+  - namespace
+  - type
+  - key
+  - value
+  - confidence
+  - source
+  - created_at
+  - updated_at
+  - sensitivity
+
+additionalProperties: false
+
+properties:
+  id:
+    type: string
+    pattern: "^fact_[a-z0-9_]+$"
+    description: "Unique identifier. Format: fact_<descriptive_name> or fact_<uuid>."
+    examples:
+      - "fact_output_format_pref"
+      - "fact_a1b2c3d4"
+
+  namespace:
+    type: string
+    enum: [user, tenant, project, system]
+    description: >
+      Scoping namespace.
+      - user: applies to a specific user
+      - tenant: applies to an org or team
+      - project: applies to a specific project/repo
+      - system: platform-level facts (rarely written by agents)
+
+  type:
+    type: string
+    enum: [preference, identity, goal, constraint, domain_fact, exclusion]
+    description: >
+      Semantic type of the fact.
+      - preference: how the user wants things done (tone, format, style)
+      - identity: who the user is, their role, background
+      - goal: what the user is trying to accomplish
+      - constraint: things to avoid or hard limits
+      - domain_fact: stable facts about the world or the project
+      - exclusion: things explicitly ruled out ("never suggest X")
+
+  key:
+    type: string
+    minLength: 3
+    maxLength: 128
+    pattern: "^[a-z][a-z0-9_\\.]*$"
+    description: >
+      Machine-readable key in snake_case or dot.notation.
+      Must be specific enough to support contradiction detection.
+    examples:
+      - "output_format"
+      - "preferred_tone"
+      - "current_project.focus"
+      - "expertise.python"
+
+  value:
+    description: >
+      The fact value. Can be string, number, boolean, or array of strings.
+      NEVER store PII (email, phone, address, SSN, credentials) as a value.
+      NEVER store secrets or tokens as values.
+    oneOf:
+      - type: string
+      - type: number
+      - type: boolean
+      - type: array
+        items:
+          type: string
+
+  confidence:
+    type: number
+    minimum: 0.0
+    maximum: 1.0
+    description: >
+      Confidence that this fact is currently accurate.
+      - 1.0: explicitly stated by user in direct, unambiguous terms
+      - 0.8-0.99: explicitly stated with some ambiguity, or confirmed multiple times
+      - 0.5-0.79: inferred from repeated pattern across multiple sessions
+      - 0.3-0.49: inferred from single session or weak pattern
+      - < 0.3: should not be in the store; delete or demote
+      RULE: inferred facts have a ceiling of 0.8 regardless of pattern strength.
+
+  source:
+    type: string
+    enum: [explicit, inferred, imported]
+    description: >
+      Provenance of this fact.
+      - explicit: user directly stated this in conversation
+      - inferred: model derived this from behavioral patterns
+      - imported: loaded from an external source (onboarding form, profile sync)
+
+  created_at:
+    type: string
+    format: date-time
+    description: "ISO 8601 UTC timestamp of initial fact creation."
+
+  updated_at:
+    type: string
+    format: date-time
+    description: "ISO 8601 UTC timestamp of last update. Equal to created_at on first write."
+
+  last_confirmed_at:
+    type: string
+    format: date-time
+    description: >
+      ISO 8601 UTC timestamp of last explicit user confirmation of this fact.
+      Used for the 90-day inferred fact decay policy.
+      Null if never explicitly confirmed (always the case for source: inferred).
+
+  expires_at:
+    type: ["string", "null"]
+    format: date-time
+    description: >
+      ISO 8601 UTC timestamp after which this fact should be treated as expired.
+      Null means no TTL — fact is permanent until explicitly deleted.
+      RULE: all inferred facts should have expires_at set. Prefer 180 days maximum.
+
+  sensitivity:
+    type: string
+    enum: [low, moderate, high]
+    description: >
+      Sensitivity classification for retrieval access control.
+      - low: safe to inject into any context
+      - moderate: only inject when relevant to the current task
+      - high: require explicit user confirmation before injection; never inject in multi-user contexts
+
+  tags:
+    type: array
+    items:
+      type: string
+    description: >
+      Optional semantic tags for retrieval filtering.
+      Examples: ["project:sixdots", "domain:security", "workflow:research"]
+    uniqueItems: true
+
+  source_session_id:
+    type: ["string", "null"]
+    description: >
+      The session ID where this fact was created or last confirmed.
+      Null for imported facts.
+
+# --- Example Valid Entries (JSONL format for semantic_memory.jsonl) ---
+#
+# {"id":"fact_tone_pref","namespace":"user","type":"preference","key":"preferred_tone","value":"direct","confidence":1.0,"source":"explicit","created_at":"2026-01-15T09:00:00Z","updated_at":"2026-03-20T14:00:00Z","last_confirmed_at":"2026-03-20T14:00:00Z","expires_at":null,"sensitivity":"low","tags":["communication"],"source_session_id":"sess_abc123"}
+#
+# {"id":"fact_output_format","namespace":"user","type":"preference","key":"output_format","value":"markdown","confidence":1.0,"source":"explicit","created_at":"2026-01-15T09:00:00Z","updated_at":"2026-01-15T09:00:00Z","last_confirmed_at":"2026-01-15T09:00:00Z","expires_at":null,"sensitivity":"low","tags":["formatting"],"source_session_id":"sess_abc123"}
+#
+# {"id":"fact_avoid_tables","namespace":"user","type":"preference","key":"tables_preference","value":false,"confidence":0.85,"source":"inferred","created_at":"2026-03-10T11:00:00Z","updated_at":"2026-03-10T11:00:00Z","last_confirmed_at":null,"expires_at":"2026-09-10T11:00:00Z","sensitivity":"low","tags":["formatting"],"source_session_id":"sess_xyz789"}
+#
+# {"id":"fact_current_focus","namespace":"user","type":"goal","key":"current_project.focus","value":"BCI security framework","confidence":0.9,"source":"explicit","created_at":"2026-02-01T10:00:00Z","updated_at":"2026-04-01T08:00:00Z","last_confirmed_at":"2026-04-01T08:00:00Z","expires_at":"2026-10-01T00:00:00Z","sensitivity":"low","tags":["project:qif","domain:neurosecurity"],"source_session_id":"sess_def456"}

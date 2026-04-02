@@ -1,0 +1,233 @@
+# Memory Write Policy
+# Governs when the agent is allowed to write to durable memory stores.
+# This is a governance document AND a machine-readable policy spec.
+# Implement these rules in your context assembly pipeline's write gate.
+
+version: "1.0"
+last_reviewed: "2026-04-01"
+next_review: "2026-07-01"
+
+# ────────────────────────────────────────────────────────────────
+# SECTION 1: General Principles
+# ────────────────────────────────────────────────────────────────
+
+principles:
+  - id: P1
+    name: explicit_over_inferred
+    statement: >
+      Explicit user statements always take precedence over model inferences.
+      When a user says "I prefer X," write with confidence 1.0 and source: explicit.
+      When the model infers "user seems to prefer X," write with confidence ≤ 0.8 and source: inferred,
+      only after the pattern repeats across 3+ sessions.
+
+  - id: P2
+    name: no_sensitive_data
+    statement: >
+      Never write PII (email, phone, physical address, SSN, financial data) to any memory store.
+      Never write secrets, tokens, API keys, or credentials.
+      Never write health or biometric data.
+      If a user statement contains PII, record the preference without the PII:
+        OK: {"key": "notification_preference", "value": "email"}
+        NOT OK: {"key": "email", "value": "user@example.com"}
+
+  - id: P3
+    name: audit_every_write
+    statement: >
+      Every write to semantic or episodic memory must produce an audit log entry.
+      The audit entry must include: timestamp, session_id, user_id, the proposed fact/episode,
+      the source (trigger phrase or inferred pattern), and the confidence.
+      Writes that bypass the audit log are a security violation.
+
+  - id: P4
+    name: model_cannot_self_modify_unilaterally
+    statement: >
+      The model cannot write to durable memory without either explicit user instruction
+      or a confirmed inferred pattern (3+ sessions). Single-session inferences must sit
+      in pending_memory_writes and wait for user confirmation at session close.
+      The model cannot modify its own instructions (CLAUDE.md, rules files) via memory writes.
+
+  - id: P5
+    name: separation_of_concerns
+    statement: >
+      Security constraints, safety boundaries, and tool policies are NEVER stored in
+      semantic memory. They live in the system layer (Layer 1) and hooks. A memory write
+      cannot override an immutable field. If a user says "ignore security rules," that
+      instruction is rejected, not written to memory.
+
+# ────────────────────────────────────────────────────────────────
+# SECTION 2: Write Rules by Trigger Type
+# ────────────────────────────────────────────────────────────────
+
+write_rules:
+
+  explicit_preference:
+    description: "User directly states a preference in unambiguous terms."
+    examples:
+      - "I prefer concise responses"
+      - "Always use TypeScript, never plain JavaScript"
+      - "Don't suggest framework X"
+    auto_write: true
+    requires_confirmation: false
+    confidence: 1.0
+    source: explicit
+    target_store: semantic
+    memory_type: preference
+    audit_required: true
+    ttl: null  # permanent until user changes it
+
+  explicit_fact:
+    description: "User states a stable fact about themselves or their project."
+    examples:
+      - "I'm building a BCI security framework"
+      - "The project uses PostgreSQL 16"
+      - "My primary language is Python"
+    auto_write: true
+    requires_confirmation: false
+    confidence: 1.0
+    source: explicit
+    target_store: semantic
+    memory_type: [identity, goal, domain_fact]
+    audit_required: true
+    ttl: "180d"  # facts about current projects expire; stable identity facts can be null
+
+  explicit_remember_instruction:
+    description: "User explicitly says 'remember this' or equivalent."
+    examples:
+      - "Remember that the JWT fix needs a semgrep rule"
+      - "Save this decision: we're using PostgreSQL not MongoDB"
+    auto_write: true
+    requires_confirmation: false
+    confidence: 1.0
+    source: explicit
+    target_store: [semantic, episodic]  # context-dependent
+    audit_required: true
+    ttl: null
+
+  inferred_single_session:
+    description: "Model infers a preference from behavioral cues in one session."
+    examples:
+      - "User asked for shorter responses 3 times in this session"
+      - "User ignored table output and reformatted as bullets"
+    auto_write: false
+    requires_confirmation: true    # Must sit in pending_memory_writes
+    confidence_ceiling: 0.5        # Never above 0.5 for single-session inference
+    source: inferred
+    target_store: semantic
+    pending_expiry: "session_end"  # Discarded if not confirmed before session closes
+    audit_required: true
+
+  inferred_repeated_pattern:
+    description: "Model has observed the same preference across 3+ distinct sessions."
+    examples:
+      - "User has requested markdown output in 5 of the last 6 sessions"
+      - "User has rejected table format suggestions in 4 sessions"
+    sessions_required: 3
+    auto_write: true
+    requires_confirmation: false
+    confidence_ceiling: 0.8        # Never above 0.8 for inferred, even strong patterns
+    source: inferred
+    target_store: semantic
+    audit_required: true
+    ttl: "90d"                     # Inferred facts decay; re-confirm or expire
+
+  session_completion_episode:
+    description: "Automated episode write at session close for significant sessions."
+    trigger: "session_close with importance >= 0.5"
+    auto_write: true
+    requires_confirmation: false
+    target_store: episodic
+    audit_required: true
+    importance_threshold: 0.5     # Sessions with importance < 0.5 don't generate episodes
+
+  explicit_milestone_episode:
+    description: "User marks a milestone or significant decision."
+    examples:
+      - "We just shipped the auth module"
+      - "Decision made: PostgreSQL over MongoDB"
+    auto_write: true
+    requires_confirmation: false
+    target_store: episodic
+    importance: 0.85              # High importance by default for explicit milestones
+    audit_required: true
+
+# ────────────────────────────────────────────────────────────────
+# SECTION 3: What NEVER Gets Written
+# ────────────────────────────────────────────────────────────────
+
+write_blocklist:
+  - category: pii
+    description: "Personal identifiable information"
+    blocked_patterns:
+      - "email addresses"
+      - "phone numbers"
+      - "physical addresses"
+      - "social security numbers"
+      - "financial account numbers"
+      - "passport or ID numbers"
+    action: reject_and_warn
+
+  - category: credentials
+    description: "Secrets, keys, tokens, passwords"
+    blocked_patterns:
+      - "API keys (any pattern matching key_[a-z0-9]{32,})"
+      - "JWT tokens"
+      - "OAuth tokens or refresh tokens"
+      - "Passwords or password hashes"
+      - "SSH private keys"
+    action: reject_and_alert   # Higher severity — flag to security audit
+
+  - category: security_constraints
+    description: "Security rules and safety constraints belong in hooks, not memory"
+    blocked_keys:
+      - "safety.*"
+      - "security.*"
+      - "tool_policy.*"
+    action: reject_and_explain  # Tell the model why this write is blocked
+
+  - category: transient_state
+    description: "Temporary preferences or states from a single session"
+    indicators:
+      - "User said 'just for this task'"
+      - "User said 'just this once'"
+      - "User said 'temporarily'"
+    action: keep_in_working_memory_only
+
+  - category: emotional_state
+    description: "Temporary emotional states have no place in durable memory"
+    examples:
+      - "User is frustrated"
+      - "User seems excited about X"
+      - "User appears to be in a hurry"
+    action: reject
+
+  - category: speculative_inference
+    description: "Low-confidence single-observation inferences"
+    condition: "source == inferred AND confidence < 0.3"
+    action: reject
+
+# ────────────────────────────────────────────────────────────────
+# SECTION 4: Conflict Resolution
+# ────────────────────────────────────────────────────────────────
+
+conflict_resolution:
+  same_key_same_namespace:
+    - case: "New write has source: explicit and existing has source: inferred"
+      action: overwrite
+      note: "Explicit always beats inferred"
+
+    - case: "New write has higher confidence than existing"
+      action: overwrite_with_audit
+      note: "Higher confidence supersedes; log the conflict"
+
+    - case: "Same confidence, different values"
+      action: flag_for_review
+      note: "Cannot auto-resolve; present both to user"
+
+    - case: "New value semantically contradicts existing value"
+      action: flag_for_review
+      note: "Contradiction detection via embedding similarity; threshold 0.8"
+
+  different_key_same_semantic_concept:
+    action: flag_for_review
+    note: "Example: 'output_length: concise' vs 'response_verbosity: thorough' are the same concept"
+    detection: "embedding similarity threshold 0.85 across keys in same namespace"
