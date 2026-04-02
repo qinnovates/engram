@@ -48,6 +48,14 @@ pub struct SearchIndex {
     f_domain: Field,
     f_polarity: Field,
     f_entities: Field,
+    // SIEMPLE-AI governance fields (v2.0.0)
+    f_namespace: Field,
+    f_memory_type: Field,
+    f_confidence: Field,
+    f_source_provenance: Field,
+    f_sensitivity: Field,
+    f_tags: Field,
+    f_expires_at: Field,
 }
 
 impl SearchIndex {
@@ -73,6 +81,15 @@ impl SearchIndex {
         let f_domain = schema_builder.add_text_field("domain", TEXT | STORED);
         let f_polarity = schema_builder.add_text_field("polarity", STRING | STORED);
         let f_entities = schema_builder.add_text_field("entities", TEXT | STORED);
+
+        // SIEMPLE-AI governance fields (v2.0.0)
+        let f_namespace = schema_builder.add_text_field("namespace", STRING | STORED);
+        let f_memory_type = schema_builder.add_text_field("memory_type", STRING | STORED);
+        let f_confidence = schema_builder.add_f64_field("confidence", STORED | FAST);
+        let f_source_provenance = schema_builder.add_text_field("source_provenance", STRING | STORED);
+        let f_sensitivity = schema_builder.add_text_field("sensitivity", STRING | STORED);
+        let f_tags = schema_builder.add_text_field("tags", TEXT | STORED);
+        let f_expires_at = schema_builder.add_text_field("expires_at", STRING | STORED);
 
         let schema = schema_builder.build();
 
@@ -106,6 +123,13 @@ impl SearchIndex {
             f_domain,
             f_polarity,
             f_entities,
+            f_namespace,
+            f_memory_type,
+            f_confidence,
+            f_source_provenance,
+            f_sensitivity,
+            f_tags,
+            f_expires_at,
         })
     }
 
@@ -133,8 +157,18 @@ impl SearchIndex {
         let f_dom = self.f_domain;
         let f_pol = self.f_polarity;
         let f_ent = self.f_entities;
+        // SIEMPLE-AI governance fields
+        let f_ns = self.f_namespace;
+        let f_mt = self.f_memory_type;
+        let f_conf = self.f_confidence;
+        let f_sp = self.f_source_provenance;
+        let f_sens = self.f_sensitivity;
+        let f_tags = self.f_tags;
+        let f_exp = self.f_expires_at;
 
         let supersedes_val = artifact.supersedes.clone().unwrap_or_default();
+        let tags_val = artifact.tags.clone().unwrap_or_default();
+        let expires_val = artifact.expires_at.clone().unwrap_or_default();
         let sem = &artifact.semantic;
         let writer = self.ensure_writer()?;
 
@@ -153,6 +187,14 @@ impl SearchIndex {
             f_dom => semantic::join_field(&sem.domain),
             f_pol => sem.polarity.clone(),
             f_ent => semantic::join_field(&sem.entities),
+            // SIEMPLE-AI governance fields
+            f_ns => artifact.namespace.clone(),
+            f_mt => artifact.memory_type.clone(),
+            f_conf => artifact.confidence as f64,
+            f_sp => artifact.source_provenance.clone(),
+            f_sens => artifact.sensitivity.clone(),
+            f_tags => tags_val,
+            f_exp => expires_val,
         ))?;
 
         Ok(())

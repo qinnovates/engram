@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "myelin8"
-version = "1.2.0"
+version = "2.0.0a1"
 description = "Brain-inspired AI memory compression with optional post-quantum encryption. Extends context windows 3-50x through tiered storage and semantic indexing."
 readme = "README.md"
 license = {text = "MIT"}
@@ -44,6 +44,10 @@ embeddings = [
     "sentence-transformers>=2.2.0",
     "numpy>=1.24.0",
     "pyarrow>=14.0.0",
+]
+governance = [
+    "pyyaml>=6.0",
+    "jsonschema>=4.17",
 ]
 
 [project.urls]

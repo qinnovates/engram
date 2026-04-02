@@ -24,7 +24,39 @@ pub struct Artifact {
     pub supersedes: Option<String>,
     /// Semantic KV metadata extracted at ingest time
     pub semantic: SemanticFields,
+
+    // ── SIEMPLE-AI governance fields (v2.0.0) ──────────────────────────
+    /// Scoping namespace: user, tenant, project, system
+    #[serde(default = "default_namespace")]
+    pub namespace: String,
+    /// Fact type: preference, identity, goal, constraint, domain_fact, exclusion, episode, note
+    #[serde(default = "default_memory_type")]
+    pub memory_type: String,
+    /// Confidence score 0.0-1.0 (explicit=1.0, inferred ceiling=0.8)
+    #[serde(default = "default_confidence")]
+    pub confidence: f32,
+    /// Provenance: explicit, inferred, imported
+    #[serde(default = "default_source_provenance")]
+    pub source_provenance: String,
+    /// Sensitivity: low, moderate, high
+    #[serde(default = "default_sensitivity")]
+    pub sensitivity: String,
+    /// JSON-encoded string array of semantic tags
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<String>,
+    /// ISO 8601 TTL. Null = permanent
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// Source session ID for provenance tracing
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
+
+fn default_namespace() -> String { "user".to_string() }
+fn default_memory_type() -> String { "note".to_string() }
+fn default_confidence() -> f32 { 0.5 }
+fn default_source_provenance() -> String { "explicit".to_string() }
+fn default_sensitivity() -> String { "low".to_string() }
 
 /// Count files matching a source's pattern.
 pub fn count_files_in_source(source: &Source) -> Result<usize> {
@@ -164,6 +196,15 @@ fn ingest_file(path: &Path, label: &str) -> Result<Option<Artifact>> {
         original_size: raw_bytes.len() as u64,
         supersedes: None, // set by SupersessionIndex during ingest
         semantic: semantic_fields,
+        // SIEMPLE-AI governance defaults (file-ingest path)
+        namespace: "user".to_string(),
+        memory_type: "note".to_string(),
+        confidence: 0.5,
+        source_provenance: "imported".to_string(),
+        sensitivity: "low".to_string(),
+        tags: None,
+        expires_at: None,
+        session_id: None,
     }))
 }
 
