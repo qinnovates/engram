@@ -1,6 +1,6 @@
 # Myelin8
 
-> **Status:** Tiered compression, keyword search, hybrid retrieval, and Merkle integrity are stable. Post-quantum encryption works but is opt-in and unaudited. CoGraph and significance scoring are being evaluated. This is a research project and portfolio piece. The code is open because the ideas might be useful to others building AI memory infrastructure.
+> **Status: v2.0.0-alpha (work in progress).** Storage engine (compression, search, integrity) is stable. SIEMPLE-AI governance layer (write policy, context assembly, audit trail) is implemented and tested but not yet validated in production with Claude Code. Encryption is disabled pending MCP-mediated decryption (v2.1.0). 178 tests passing. This is a research project and portfolio piece. The code is open because the ideas might be useful to others building AI memory infrastructure.
 
 **A SIEM-inspired memory engine for AI assistants.** Tiered compression, hybrid search, and integrity verification — so your AI remembers what mattered without recomputing what it already knew.
 
@@ -61,7 +61,7 @@ AI session files (Claude, Cursor, ChatGPT, Copilot)
 
 ## Components
 
-### Active (v1.2.0)
+### Active (v2.0.0-alpha)
 
 | Component | What It Does | How It Works |
 |---|---|---|
@@ -116,6 +116,47 @@ Every design decision maps to how enterprise SIEMs handle massive log data:
 | **Cluster master** (transparent decompression) | Engine recall pipeline | AI never sees compressed data |
 | **SmartStore** (S3 cold storage, cache on access) | Frozen Parquet + recall to hot | Slow but complete archive |
 | **Trained dictionaries** (schema-aware compression) | 112KB compression dictionary | Compress only what's unique per session |
+
+---
+
+## Governance Layer (v2.0.0)
+
+v1.0 encrypted everything including Claude's own memory files. Claude's Read tool couldn't decrypt. Memory was invisible. The lesson: **build the integration layer before the security layer.**
+
+v2.0.0 adds a governance layer (based on [SIEMPLE-AI](docs/governance/SIEMPLE-AI-README.md) layered context orchestration) that sits between the storage engine and the AI consumer:
+
+```
+Claude Code ──MCP──> myelin8-rs ──subprocess──> Python governance
+                         |                           |
+                    tantivy + Parquet          write policy + audit
+                    (storage engine)          (SIEMPLE-AI governance)
+```
+
+### What the Governance Layer Does
+
+| Feature | What Happens |
+|---------|-------------|
+| **Write Policy** | Every write validated: PII blocked, credentials blocked, security keys blocked, inferred confidence capped at 0.8 |
+| **Schema Validation** | Facts and episodes validated against YAML schemas before storage |
+| **Audit Trail** | Every governance decision logged to `memory_writes.jsonl` (metadata only, never content) |
+| **Context Assembly** | 3-layer merge (System + User + Session) with top-5 fact retrieval within token budget |
+| **Session Lifecycle** | Stale sessions (>72h) cleaned up at next context assembly. Unconfirmed writes discarded |
+| **Conflict Detection** | Same-key writes flagged before overwriting existing facts |
+
+### New MCP Tools
+
+| Tool | Purpose |
+|------|---------|
+| `memory_ingest_governed` | Write-gated ingest: validates, scans, audits, then indexes |
+| `memory_context` | Assembles context block from layers + relevant memories within token budget |
+
+### The SIEM Insight
+
+Every production SIEM follows the same configuration model: global defaults → app-level overrides → environment overrides → tenant preferences → runtime state. Each layer inherits from the one above. Immutable fields can't be overridden. Audit logs capture every change.
+
+AI agents need the exact same architecture. Instead of dumping everything into one CLAUDE.md or one memory blob, Myelin8 now separates concerns into layers with deterministic precedence, confidence scoring, TTL decay, and tamper-evident audit trails.
+
+See [docs/governance/](docs/governance/) for the full specification, schemas, templates, and design rationale.
 
 ---
 
@@ -194,7 +235,7 @@ myelin8 status
 | Crypto (opt) | ML-KEM-768 + X25519 + AES-256-GCM (Rust) | Post-quantum encryption at rest |
 | Keys (opt) | macOS Keychain via Rust sidecar | Private keys never in Python |
 
-**171 Python tests + 18 Rust tests.** MIT License.
+**178 Python tests + 18 Rust tests.** MIT License.
 
 ---
 
@@ -204,6 +245,8 @@ myelin8 status
 |---|---|
 | [docs/WHY.md](docs/WHY.md) | Why this exists — the Transformer limitation, SIEM analogy, hybrid approach rationale |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Full architecture — data flow, tier transitions, compression pipeline, search cascade |
+| [docs/MYELIN8-V2-ARCHITECTURE.md](docs/MYELIN8-V2-ARCHITECTURE.md) | v2 brain-informed architecture — Merkle summaries, selective decompression, activation graph |
+| [docs/governance/](docs/governance/) | **SIEMPLE-AI governance layer** — layered context, write policy, schemas, templates, anti-patterns, SIEM analogy, maintenance, the full reference implementation |
 | [docs/MERKLE-INDEX-SPEC.md](docs/MERKLE-INDEX-SPEC.md) | Merkle tree specification — SHA3-256, domain separation, HMAC seal, inverted index |
 | [docs/KEY-STORAGE-GUIDE.md](docs/KEY-STORAGE-GUIDE.md) | Encryption setup — Rust sidecar, Keychain, per-tier keypairs |
 | [docs/FAQ.md](docs/FAQ.md) | Common questions |
